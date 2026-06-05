@@ -1,0 +1,16 @@
+[Unit]
+Description=Netwatch network quality monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/netwatchd -config /etc/netwatch/netwatch.json
+WorkingDirectory=/var/lib/netwatch
+Restart=always
+RestartSec=5
+User=netwatch
+Group=netwatch
+
+[Install]
+WantedBy=multi-user.target
