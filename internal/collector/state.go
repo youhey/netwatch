@@ -99,6 +99,43 @@ func (s *State) SeriesByType(sampleType, name string, since time.Time) []model.S
 	return samples
 }
 
+func (s *State) LatestServices() []model.Sample {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var samples []model.Sample
+	for _, sample := range s.latest {
+		if sample.Type == "http" && sample.Group != "" {
+			samples = append(samples, sample)
+		}
+	}
+	sortSamples(samples)
+
+	return samples
+}
+
+func (s *State) ServiceSeries(group, name string, since time.Time) []model.Sample {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var samples []model.Sample
+	for _, sample := range s.series {
+		if sample.Type != "http" || sample.Group == "" || sample.Timestamp.Before(since) {
+			continue
+		}
+		if name != "" && sample.Name != name {
+			continue
+		}
+		if name == "" && group != "" && sample.Group != group {
+			continue
+		}
+		samples = append(samples, sample)
+	}
+	sortSamples(samples)
+
+	return samples
+}
+
 func sortSamples(samples []model.Sample) {
 	sort.SliceStable(samples, func(i, j int) bool {
 		if samples[i].Name == samples[j].Name {

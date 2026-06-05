@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 )
@@ -22,12 +23,16 @@ type Config struct {
 }
 
 type TargetConfig struct {
-	Name     string `json:"name"`
-	Type     string `json:"type"`
-	Target   string `json:"target"`
-	Hostname string `json:"hostname"`
-	URL      string `json:"url"`
-	Method   string `json:"method"`
+	Name            string `json:"name"`
+	Type            string `json:"type"`
+	Group           string `json:"group"`
+	Category        string `json:"category"`
+	Target          string `json:"target"`
+	Hostname        string `json:"hostname"`
+	URL             string `json:"url"`
+	Method          string `json:"method"`
+	IntervalSeconds int    `json:"interval_seconds"`
+	TimeoutSeconds  int    `json:"timeout_seconds"`
 }
 
 func Load(path string) (Config, error) {
@@ -116,13 +121,71 @@ func (c Config) Validate() error {
 			if strings.TrimSpace(target.URL) == "" {
 				return fmt.Errorf("targets[%d].url is required for http target", i)
 			}
+			if err := validateHTTPURL(target.URL); err != nil {
+				return fmt.Errorf("targets[%d].url is invalid: %w", i, err)
+			}
 			if target.Method != "" && strings.ToUpper(target.Method) != "GET" {
-				return fmt.Errorf("targets[%d].method must be GET in Phase 2", i)
+				return fmt.Errorf("targets[%d].method must be GET in Phase 3", i)
+			}
+			if strings.TrimSpace(target.Category) != "" && strings.TrimSpace(target.Group) == "" {
+				return fmt.Errorf("targets[%d].group is required when category is set for http target", i)
 			}
 		default:
 			return fmt.Errorf("targets[%d].type must be one of ping, dns, http", i)
 		}
+		if target.IntervalSeconds < 0 {
+			return fmt.Errorf("targets[%d].interval_seconds must be greater than or equal to 0", i)
+		}
+		if target.TimeoutSeconds < 0 {
+			return fmt.Errorf("targets[%d].timeout_seconds must be greater than or equal to 0", i)
+		}
 	}
 
 	return nil
+}
+
+func validateHTTPURL(value string) error {
+	u, err := url.Parse(value)
+	if err != nil {
+		return err
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return errors.New("scheme must be http or https")
+	}
+	if strings.TrimSpace(u.Host) == "" {
+		return errors.New("host is required")
+	}
+	return nil
+}
+
+func (c Config) IntervalSeconds(target TargetConfig) int {
+	if target.IntervalSeconds > 0 {
+		return target.IntervalSeconds
+	}
+	switch target.Type {
+	case "ping":
+		return c.PingIntervalSeconds
+	case "dns":
+		return c.DNSIntervalSeconds
+	case "http":
+		return c.HTTPIntervalSeconds
+	default:
+		return c.PingIntervalSeconds
+	}
+}
+
+func (c Config) TimeoutSeconds(target TargetConfig) int {
+	if target.TimeoutSeconds > 0 {
+		return target.TimeoutSeconds
+	}
+	switch target.Type {
+	case "ping":
+		return c.PingTimeoutSeconds
+	case "dns":
+		return c.DNSTimeoutSeconds
+	case "http":
+		return c.HTTPTimeoutSeconds
+	default:
+		return c.PingTimeoutSeconds
+	}
 }

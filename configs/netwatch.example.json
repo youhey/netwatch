@@ -32,12 +32,96 @@
     {
       "name": "cloudflare_home",
       "type": "http",
+      "group": "baseline",
+      "category": "baseline",
       "url": "https://www.cloudflare.com/"
     },
     {
       "name": "google_generate_204",
       "type": "http",
+      "group": "baseline",
+      "category": "baseline",
       "url": "https://www.google.com/generate_204"
+    },
+    {
+      "name": "youtube_home",
+      "type": "http",
+      "group": "youtube",
+      "category": "service",
+      "url": "https://www.youtube.com/",
+      "interval_seconds": 300
+    },
+    {
+      "name": "netflix_status",
+      "type": "http",
+      "group": "netflix",
+      "category": "service",
+      "url": "https://help.netflix.com/en/is-netflix-down",
+      "interval_seconds": 300
+    },
+    {
+      "name": "slack_status",
+      "type": "http",
+      "group": "slack",
+      "category": "service",
+      "url": "https://slack-status.com/api/v2.0.0/current",
+      "interval_seconds": 300
+    },
+    {
+      "name": "steam_store",
+      "type": "http",
+      "group": "steam",
+      "category": "service",
+      "url": "https://store.steampowered.com/",
+      "interval_seconds": 300
+    },
+    {
+      "name": "psn_status",
+      "type": "http",
+      "group": "psn",
+      "category": "game",
+      "url": "https://status.playstation.com/",
+      "interval_seconds": 300
+    },
+    {
+      "name": "aws_health",
+      "type": "http",
+      "group": "aws",
+      "category": "cloud",
+      "url": "https://health.aws.amazon.com/",
+      "interval_seconds": 300
+    },
+    {
+      "name": "azure_status",
+      "type": "http",
+      "group": "azure",
+      "category": "cloud",
+      "url": "https://azure.status.microsoft/",
+      "interval_seconds": 300
+    },
+    {
+      "name": "riot_status",
+      "type": "http",
+      "group": "pcgame",
+      "category": "game",
+      "url": "https://status.riotgames.com/",
+      "interval_seconds": 300
+    },
+    {
+      "name": "ea_status",
+      "type": "http",
+      "group": "pcgame",
+      "category": "game",
+      "url": "https://help.ea.com/en/server-status/",
+      "interval_seconds": 300
+    },
+    {
+      "name": "sf6_buckler_info",
+      "type": "http",
+      "group": "pcgame",
+      "category": "game",
+      "url": "https://www.streetfighter.com/6/buckler/en/information/all/1",
+      "interval_seconds": 300
     }
   ]
 }

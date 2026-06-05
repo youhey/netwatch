@@ -47,42 +47,45 @@ func New(cfg config.Config, ping PingProbe, dns DNSProbe, http HTTPProbe, storag
 }
 
 func (c *Collector) Run(ctx context.Context) {
-	c.collectType(ctx, "ping")
-	c.collectType(ctx, "dns")
-	c.collectType(ctx, "http")
+	nextRuns := make(map[string]time.Time, len(c.cfg.Targets))
+	now := time.Now()
+	for _, target := range c.cfg.Targets {
+		nextRuns[target.Name] = now
+	}
 
-	go c.runType(ctx, "dns", time.Duration(c.cfg.DNSIntervalSeconds)*time.Second)
-	go c.runType(ctx, "http", time.Duration(c.cfg.HTTPIntervalSeconds)*time.Second)
-	c.runType(ctx, "ping", time.Duration(c.cfg.PingIntervalSeconds)*time.Second)
-}
-
-func (c *Collector) runType(ctx context.Context, targetType string, interval time.Duration) {
-	ticker := time.NewTicker(interval)
+	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 
 	for {
+		c.collectDue(ctx, nextRuns)
+
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			c.collectType(ctx, targetType)
 		}
 	}
 }
 
-func (c *Collector) collectType(ctx context.Context, targetType string) {
+func (c *Collector) collectDue(ctx context.Context, nextRuns map[string]time.Time) {
+	now := time.Now()
 	for _, target := range c.cfg.Targets {
-		if target.Type != targetType {
+		if now.Before(nextRuns[target.Name]) {
 			continue
 		}
 
-		sample := c.measure(ctx, target)
-		if err := c.storage.Append(sample); err != nil {
-			log.Printf("append sample failed: type=%s name=%s error=%v", sample.Type, sample.Name, err)
-			continue
-		}
-		c.state.Add(sample)
+		c.collectTarget(ctx, target)
+		nextRuns[target.Name] = now.Add(time.Duration(c.cfg.IntervalSeconds(target)) * time.Second)
 	}
+}
+
+func (c *Collector) collectTarget(ctx context.Context, target config.TargetConfig) {
+	sample := c.measure(ctx, target)
+	if err := c.storage.Append(sample); err != nil {
+		log.Printf("append sample failed: type=%s name=%s error=%v", sample.Type, sample.Name, err)
+		return
+	}
+	c.state.Add(sample)
 }
 
 func (c *Collector) measure(ctx context.Context, target config.TargetConfig) model.Sample {
@@ -109,10 +112,12 @@ func (c *Collector) measurePing(ctx context.Context, target config.TargetConfig)
 		Timestamp: time.Now().Local(),
 		Type:      target.Type,
 		Name:      target.Name,
+		Group:     target.Group,
+		Category:  target.Category,
 		Target:    target.Target,
 	}
 
-	timeout := time.Duration(c.cfg.PingTimeoutSeconds) * time.Second
+	timeout := time.Duration(c.cfg.TimeoutSeconds(target)) * time.Second
 	pingCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -143,10 +148,12 @@ func (c *Collector) measureDNS(ctx context.Context, target config.TargetConfig) 
 		Timestamp: time.Now().Local(),
 		Type:      target.Type,
 		Name:      target.Name,
+		Group:     target.Group,
+		Category:  target.Category,
 		Hostname:  target.Hostname,
 	}
 
-	timeout := time.Duration(c.cfg.DNSTimeoutSeconds) * time.Second
+	timeout := time.Duration(c.cfg.TimeoutSeconds(target)) * time.Second
 	dnsCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -172,11 +179,13 @@ func (c *Collector) measureHTTP(ctx context.Context, target config.TargetConfig)
 		Timestamp: time.Now().Local(),
 		Type:      target.Type,
 		Name:      target.Name,
+		Group:     target.Group,
+		Category:  target.Category,
 		URL:       target.URL,
 		Method:    method,
 	}
 
-	timeout := time.Duration(c.cfg.HTTPTimeoutSeconds) * time.Second
+	timeout := time.Duration(c.cfg.TimeoutSeconds(target)) * time.Second
 	httpCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 

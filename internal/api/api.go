@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -33,6 +34,9 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /api/dns/series", h.dnsSeries)
 	mux.HandleFunc("GET /api/http/latest", h.httpLatest)
 	mux.HandleFunc("GET /api/http/series", h.httpSeries)
+	mux.HandleFunc("GET /api/services/latest", h.servicesLatest)
+	mux.HandleFunc("GET /api/services/series", h.servicesSeries)
+	mux.HandleFunc("GET /api/services/summary", h.servicesSummary)
 	mux.HandleFunc("GET /api/monitoring/status", h.monitoringStatus)
 	return mux
 }
@@ -81,6 +85,60 @@ func (h *Handler) httpLatest(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) httpSeries(w http.ResponseWriter, r *http.Request) {
 	h.series(w, r, "http")
+}
+
+func (h *Handler) servicesLatest(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"services": groupServiceLatest(h.state.LatestServices()),
+	})
+}
+
+func (h *Handler) servicesSeries(w http.ResponseWriter, r *http.Request) {
+	group := strings.TrimSpace(r.URL.Query().Get("group"))
+	name := strings.TrimSpace(r.URL.Query().Get("name"))
+	if group != "" && name != "" {
+		writeError(w, http.StatusBadRequest, "group and name cannot be used together")
+		return
+	}
+	if group == "" && name == "" {
+		writeError(w, http.StatusBadRequest, "group or name is required")
+		return
+	}
+
+	rangeValue := r.URL.Query().Get("range")
+	if rangeValue == "" {
+		rangeValue = "24h"
+	}
+	duration, err := parseRange(rangeValue)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"group":   group,
+		"name":    name,
+		"range":   rangeValue,
+		"samples": h.state.ServiceSeries(group, name, time.Now().Add(-duration)),
+	})
+}
+
+func (h *Handler) servicesSummary(w http.ResponseWriter, r *http.Request) {
+	group := strings.TrimSpace(r.URL.Query().Get("group"))
+	rangeValue := r.URL.Query().Get("range")
+	if rangeValue == "" {
+		rangeValue = "24h"
+	}
+	duration, err := parseRange(rangeValue)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"range":  rangeValue,
+		"groups": summarizeServices(h.state.ServiceSeries(group, "", time.Now().Add(-duration))),
+	})
 }
 
 func (h *Handler) series(w http.ResponseWriter, r *http.Request, sampleType string) {
@@ -134,6 +192,132 @@ type monitoringStatusResponse struct {
 	Message string `json:"message"`
 }
 
+type serviceGroupResponse struct {
+	Group    string         `json:"group"`
+	Category string         `json:"category,omitempty"`
+	Status   string         `json:"status"`
+	Targets  []model.Sample `json:"targets"`
+}
+
+type serviceSummaryResponse struct {
+	Group        string  `json:"group"`
+	Category     string  `json:"category,omitempty"`
+	SampleCount  int     `json:"sample_count"`
+	OKRate       float64 `json:"ok_rate"`
+	AvgTotalMs   float64 `json:"avg_total_ms"`
+	MaxTotalMs   float64 `json:"max_total_ms"`
+	TimeoutCount int     `json:"timeout_count"`
+	ErrorCount   int     `json:"error_count"`
+}
+
+func groupServiceLatest(samples []model.Sample) []serviceGroupResponse {
+	groups := make(map[string]*serviceGroupResponse)
+	for _, sample := range samples {
+		group := sample.Group
+		if group == "" {
+			continue
+		}
+		if _, ok := groups[group]; !ok {
+			groups[group] = &serviceGroupResponse{
+				Group:    group,
+				Category: sample.Category,
+				Status:   "ok",
+			}
+		}
+		entry := groups[group]
+		if entry.Category == "" {
+			entry.Category = sample.Category
+		}
+		entry.Targets = append(entry.Targets, sample)
+		level, _ := sampleStatus(sample)
+		if severityRank(level) > severityRank(entry.Status) {
+			entry.Status = level
+		}
+	}
+
+	result := make([]serviceGroupResponse, 0, len(groups))
+	for _, group := range groups {
+		sortSamplesByName(group.Targets)
+		result = append(result, *group)
+	}
+	sort.SliceStable(result, func(i, j int) bool {
+		return result[i].Group < result[j].Group
+	})
+
+	return result
+}
+
+func summarizeServices(samples []model.Sample) []serviceSummaryResponse {
+	type aggregate struct {
+		category     string
+		sampleCount  int
+		okCount      int
+		totalCount   int
+		totalSum     float64
+		maxTotal     float64
+		timeoutCount int
+		errorCount   int
+	}
+
+	aggregates := make(map[string]*aggregate)
+	for _, sample := range samples {
+		if sample.Group == "" {
+			continue
+		}
+		if _, ok := aggregates[sample.Group]; !ok {
+			aggregates[sample.Group] = &aggregate{category: sample.Category}
+		}
+		agg := aggregates[sample.Group]
+		if agg.category == "" {
+			agg.category = sample.Category
+		}
+		agg.sampleCount++
+		if sample.OK != nil && *sample.OK {
+			agg.okCount++
+		}
+		if sample.TotalMs != nil {
+			agg.totalCount++
+			agg.totalSum += *sample.TotalMs
+			if *sample.TotalMs > agg.maxTotal {
+				agg.maxTotal = *sample.TotalMs
+			}
+		}
+		if sample.Error != "" || sample.OK != nil && !*sample.OK {
+			agg.errorCount++
+			if isTimeoutError(sample.Error) {
+				agg.timeoutCount++
+			}
+		}
+	}
+
+	result := make([]serviceSummaryResponse, 0, len(aggregates))
+	for group, agg := range aggregates {
+		okRate := 0.0
+		if agg.sampleCount > 0 {
+			okRate = float64(agg.okCount) / float64(agg.sampleCount) * 100
+		}
+		avgTotal := 0.0
+		if agg.totalCount > 0 {
+			avgTotal = agg.totalSum / float64(agg.totalCount)
+		}
+		result = append(result, serviceSummaryResponse{
+			Group:        group,
+			Category:     agg.category,
+			SampleCount:  agg.sampleCount,
+			OKRate:       okRate,
+			AvgTotalMs:   avgTotal,
+			MaxTotalMs:   agg.maxTotal,
+			TimeoutCount: agg.timeoutCount,
+			ErrorCount:   agg.errorCount,
+		})
+	}
+	sort.SliceStable(result, func(i, j int) bool {
+		return result[i].Group < result[j].Group
+	})
+
+	return result
+}
+
 func buildMonitoringStatus(samples []model.Sample) monitoringStatusResponse {
 	if len(samples) == 0 {
 		return monitoringStatusResponse{
@@ -145,25 +329,40 @@ func buildMonitoringStatus(samples []model.Sample) monitoringStatusResponse {
 		}
 	}
 
-	status := monitoringStatusResponse{
-		Alert:   false,
-		Source:  "network",
-		Level:   "ok",
-		Title:   "NET OK",
-		Message: "targets normal",
-	}
+	level := "ok"
+	var messages []string
 
 	for _, sample := range samples {
-		level, message := sampleStatus(sample)
-		if severityRank(level) > severityRank(status.Level) {
-			status.Alert = level != "ok"
-			status.Level = level
-			status.Title = titleForLevel(level)
-			status.Message = message
+		sampleLevel, message := sampleStatus(sample)
+		if sampleLevel == "ok" {
+			continue
 		}
+		if severityRank(sampleLevel) > severityRank(level) {
+			level = sampleLevel
+		}
+		messages = append(messages, message)
 	}
 
-	return status
+	if len(messages) == 0 {
+		return monitoringStatusResponse{
+			Alert:   false,
+			Source:  "network",
+			Level:   "ok",
+			Title:   "NET OK",
+			Message: "targets normal",
+		}
+	}
+	if len(messages) > 2 {
+		messages = append(messages[:2], fmt.Sprintf("%d more", len(messages)-2))
+	}
+
+	return monitoringStatusResponse{
+		Alert:   true,
+		Source:  "network",
+		Level:   level,
+		Title:   titleForLevel(level),
+		Message: strings.Join(messages, ", "),
+	}
 }
 
 func sampleStatus(sample model.Sample) (string, string) {
@@ -227,16 +426,37 @@ func httpStatus(sample model.Sample) (string, string) {
 	if sample.TotalMs != nil {
 		total = *sample.TotalMs
 	}
-	message := fmt.Sprintf("%s http total %.0fms", sample.Name, total)
+	label := sample.Name
+	if sample.Group != "" {
+		label = sample.Group
+	}
+	message := fmt.Sprintf("%s http total %.0fms", label, total)
 
 	if sample.Error != "" || sample.OK != nil && !*sample.OK {
-		return "warning", sample.Name + " http failure"
+		if isTimeoutError(sample.Error) {
+			return "warning", label + " timeout"
+		}
+		return "warning", label + " http failure"
 	}
-	if total >= 2000 {
+	if sample.Group != "" && total >= 3000 {
+		return "warning", message
+	}
+	if sample.Group == "" && total >= 2000 {
 		return "warning", message
 	}
 
 	return "ok", message
+}
+
+func sortSamplesByName(samples []model.Sample) {
+	sort.SliceStable(samples, func(i, j int) bool {
+		return samples[i].Name < samples[j].Name
+	})
+}
+
+func isTimeoutError(value string) bool {
+	value = strings.ToLower(value)
+	return strings.Contains(value, "timeout") || strings.Contains(value, "deadline exceeded")
 }
 
 func severityRank(level string) int {

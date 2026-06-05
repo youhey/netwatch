@@ -17,6 +17,7 @@ func TestLoadMixedJSONLSkipsInvalidLines(t *testing.T) {
 not-json
 {"ts":"` + now.Format(time.RFC3339Nano) + `","type":"dns","name":"lookup","hostname":"www.google.com","ok":true,"duration_ms":12.3}
 {"ts":"` + now.Format(time.RFC3339Nano) + `","type":"http","name":"home","url":"https://example.com/","method":"GET","ok":true,"http_status":200,"total_ms":45.6}
+{"ts":"` + now.Format(time.RFC3339Nano) + `","type":"http","group":"youtube","category":"service","name":"youtube_home","url":"https://www.youtube.com/","method":"GET","ok":true,"http_status":200,"total_ms":312.4}
 `
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
@@ -26,14 +27,17 @@ not-json
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if len(samples) != 3 {
-		t.Fatalf("len(samples) = %d, want 3", len(samples))
+	if len(samples) != 4 {
+		t.Fatalf("len(samples) = %d, want 4", len(samples))
 	}
 
 	state := collector.NewState()
 	state.Load(samples)
-	if len(state.LatestByType("ping")) != 1 || len(state.LatestByType("dns")) != 1 || len(state.LatestByType("http")) != 1 {
-		t.Fatalf("latest counts = ping:%d dns:%d http:%d, want 1 each", len(state.LatestByType("ping")), len(state.LatestByType("dns")), len(state.LatestByType("http")))
+	if len(state.LatestByType("ping")) != 1 || len(state.LatestByType("dns")) != 1 || len(state.LatestByType("http")) != 2 {
+		t.Fatalf("latest counts = ping:%d dns:%d http:%d, want ping:1 dns:1 http:2", len(state.LatestByType("ping")), len(state.LatestByType("dns")), len(state.LatestByType("http")))
+	}
+	if services := state.LatestServices(); len(services) != 1 || services[0].Group != "youtube" || services[0].Category != "service" {
+		t.Fatalf("LatestServices() = %+v, want youtube service", services)
 	}
 }
 
@@ -48,7 +52,7 @@ func TestAppendMixedSamples(t *testing.T) {
 	samples := []model.Sample{
 		{Timestamp: time.Now().UTC(), Type: "ping", Name: "ping", Target: "1.1.1.1", OK: &ok},
 		{Timestamp: time.Now().UTC(), Type: "dns", Name: "dns", Hostname: "example.com", OK: &ok, DurationMs: &duration},
-		{Timestamp: time.Now().UTC(), Type: "http", Name: "http", URL: "https://example.com/", Method: "GET", OK: &ok, HTTPStatus: &status, TotalMs: &total},
+		{Timestamp: time.Now().UTC(), Type: "http", Group: "youtube", Category: "service", Name: "http", URL: "https://example.com/", Method: "GET", OK: &ok, HTTPStatus: &status, TotalMs: &total},
 	}
 	for _, sample := range samples {
 		if err := jsonl.Append(sample); err != nil {
@@ -62,5 +66,8 @@ func TestAppendMixedSamples(t *testing.T) {
 	}
 	if len(loaded) != 3 {
 		t.Fatalf("len(loaded) = %d, want 3", len(loaded))
+	}
+	if loaded[2].Group != "youtube" || loaded[2].Category != "service" {
+		t.Fatalf("loaded[2] = %+v, want group/category restored", loaded[2])
 	}
 }
