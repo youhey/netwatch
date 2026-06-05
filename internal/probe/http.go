@@ -12,25 +12,49 @@ import (
 const UserAgent = "netwatch/0.2"
 
 type HTTPResult struct {
-	OK            bool
-	HTTPStatus    *int
-	DNSMs         *float64
-	ConnectMs     *float64
-	TLSMs         *float64
-	TTFBMs        *float64
-	TotalMs       float64
-	RemoteAddr    string
-	ContentLength *int64
+	OK                bool
+	HTTPStatus        *int
+	DNSMs             *float64
+	ConnectMs         *float64
+	TLSMs             *float64
+	TTFBMs            *float64
+	TotalMs           float64
+	RemoteAddr        string
+	ContentLength     *int64
+	ContentLengthRead int64
+	BodyTruncated     bool
 }
 
 type HTTP struct {
-	Client *http.Client
+	Client           *http.Client
+	DisableKeepAlive bool
+	MaxBodyBytes     int64
+}
+
+func NewHTTP(disableKeepAlive bool, maxBodyBytes int64) HTTP {
+	return HTTP{
+		Client: &http.Client{
+			Transport: &http.Transport{
+				DisableKeepAlives: disableKeepAlive,
+			},
+		},
+		DisableKeepAlive: disableKeepAlive,
+		MaxBodyBytes:     maxBodyBytes,
+	}
 }
 
 func (p HTTP) Get(ctx context.Context, url string) (HTTPResult, error) {
 	client := p.Client
 	if client == nil {
-		client = http.DefaultClient
+		client = &http.Client{
+			Transport: &http.Transport{
+				DisableKeepAlives: p.DisableKeepAlive,
+			},
+		}
+	}
+	maxBodyBytes := p.MaxBodyBytes
+	if maxBodyBytes <= 0 {
+		maxBodyBytes = 262144
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -96,7 +120,13 @@ func (p HTTP) Get(ctx context.Context, url string) (HTTPResult, error) {
 		result.ContentLength = &resp.ContentLength
 	}
 
-	_, readErr := io.Copy(io.Discard, resp.Body)
+	readBytes, readErr := io.Copy(io.Discard, io.LimitReader(resp.Body, maxBodyBytes+1))
+	if readBytes > maxBodyBytes {
+		result.ContentLengthRead = maxBodyBytes
+		result.BodyTruncated = true
+	} else {
+		result.ContentLengthRead = readBytes
+	}
 	result.TotalMs = durationMs(start, time.Now())
 	if readErr != nil {
 		result.OK = false

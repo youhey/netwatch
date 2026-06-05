@@ -51,8 +51,8 @@ func TestLatestGroupsSamplesByType(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("Unmarshal() error = %v", err)
 	}
-	if len(body["ping"]) != 1 || len(body["dns"]) != 1 || len(body["http"]) != 3 {
-		t.Fatalf("counts = ping:%d dns:%d http:%d, want ping:1 dns:1 http:3", len(body["ping"]), len(body["dns"]), len(body["http"]))
+	if len(body["ping"]) != 1 || len(body["dns"]) != 1 || len(body["http"]) != 4 {
+		t.Fatalf("counts = ping:%d dns:%d http:%d, want ping:1 dns:1 http:4", len(body["ping"]), len(body["dns"]), len(body["http"]))
 	}
 }
 
@@ -73,7 +73,7 @@ func TestHTTPLatest(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
-	assertSampleCount(t, rec, 3)
+	assertSampleCount(t, rec, 4)
 }
 
 func TestServicesLatest(t *testing.T) {
@@ -147,7 +147,7 @@ func TestServicesSummary(t *testing.T) {
 		t.Fatalf("len(groups) = %d, want 2", len(body.Groups))
 	}
 	youtube := body.Groups[1]
-	if youtube.Group != "youtube" || youtube.SampleCount != 2 || youtube.OKRate != 100 || youtube.AvgTotalMs != 600 || youtube.MaxTotalMs != 800 {
+	if youtube.Group != "youtube" || youtube.SampleCount != 2 || youtube.OKCount != 2 || youtube.OKRate != 100 || youtube.AvgTotalMs != 600 || youtube.MaxTotalMs != 800 {
 		t.Fatalf("youtube summary = %+v, want count 2 ok 100 avg 600 max 800", youtube)
 	}
 	steam := body.Groups[0]
@@ -186,6 +186,51 @@ func TestMonitoringStatusWarnsOnHTTPFailure(t *testing.T) {
 	}
 }
 
+func TestMonitoringStatusOK(t *testing.T) {
+	state := collector.NewState()
+	ok := true
+	state.Load([]model.Sample{
+		{Timestamp: time.Now(), Type: "ping", Name: "gateway", OK: &ok, LossPercent: floatPtr(0), RTTAvgMs: floatPtr(1)},
+		{Timestamp: time.Now(), Type: "ping", Name: "cloudflare_dns", OK: &ok, LossPercent: floatPtr(0), RTTAvgMs: floatPtr(30)},
+		{Timestamp: time.Now(), Type: "dns", Name: "lookup", OK: &ok, DurationMs: floatPtr(20)},
+		{Timestamp: time.Now(), Type: "http", Group: "youtube", Category: "service", Name: "youtube_home", OK: &ok, TotalMs: floatPtr(1000)},
+	})
+	handler := New(state, "test").Routes()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/monitoring/status", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	var body monitoringStatusResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if body.Alert || body.Level != "ok" || body.Message != "all probes healthy" {
+		t.Fatalf("body = %+v, want ok", body)
+	}
+}
+
+func TestMonitoringStatusCriticalThresholds(t *testing.T) {
+	state := collector.NewState()
+	ok := true
+	state.Load([]model.Sample{
+		{Timestamp: time.Now(), Type: "ping", Name: "cloudflare_dns", OK: &ok, LossPercent: floatPtr(0), RTTAvgMs: floatPtr(220)},
+	})
+	handler := New(state, "test").Routes()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/monitoring/status", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	var body monitoringStatusResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if !body.Alert || body.Level != "critical" {
+		t.Fatalf("body = %+v, want critical alert", body)
+	}
+}
+
 func newTestHandler() http.Handler {
 	state := collector.NewState()
 	ok := true
@@ -197,9 +242,10 @@ func newTestHandler() http.Handler {
 		{Timestamp: now, Type: "ping", Name: "cloudflare_dns", Target: "1.1.1.1", OK: &ok, LossPercent: floatPtr(0), RTTAvgMs: floatPtr(10)},
 		{Timestamp: now, Type: "dns", Name: "lookup", Hostname: "www.google.com", OK: &ok, DurationMs: floatPtr(12.3)},
 		{Timestamp: now, Type: "http", Name: "home", URL: "https://example.com/", Method: "GET", OK: &ok, HTTPStatus: &status, TotalMs: floatPtr(45.6)},
-		{Timestamp: old, Type: "http", Group: "youtube", Category: "service", Name: "youtube_home", URL: "https://www.youtube.com/", Method: "GET", OK: &ok, HTTPStatus: &status, TotalMs: floatPtr(400)},
-		{Timestamp: now, Type: "http", Group: "youtube", Category: "service", Name: "youtube_home", URL: "https://www.youtube.com/", Method: "GET", OK: &ok, HTTPStatus: &status, TotalMs: floatPtr(800)},
+		{Timestamp: old, Type: "http", Group: "youtube", Category: "service", Name: "youtube_home", URL: "https://www.youtube.com/", Method: "GET", OK: &ok, HTTPStatus: &status, TotalMs: floatPtr(400), DNSMs: floatPtr(10), ConnectMs: floatPtr(20), TLSMs: floatPtr(30), TTFBMs: floatPtr(40)},
+		{Timestamp: now, Type: "http", Group: "youtube", Category: "service", Name: "youtube_home", URL: "https://www.youtube.com/", Method: "GET", OK: &ok, HTTPStatus: &status, TotalMs: floatPtr(800), DNSMs: floatPtr(20), ConnectMs: floatPtr(30), TLSMs: floatPtr(40), TTFBMs: floatPtr(50)},
 		{Timestamp: now, Type: "http", Group: "steam", Category: "service", Name: "steam_store", URL: "https://store.steampowered.com/", Method: "GET", OK: &failed, TotalMs: floatPtr(0), Error: "timeout"},
+		{Timestamp: now, Type: "http", Group: "pcgame", Category: "game", Name: "sf6_buckler_info", URL: "https://www.streetfighter.com/6/buckler/en/information/all/1", Method: "GET", OK: &failed, HTTPStatus: intPtr(http.StatusForbidden), TotalMs: floatPtr(0)},
 	})
 	return New(state, "test").Routes()
 }
@@ -222,5 +268,9 @@ func assertSampleCount(t *testing.T, rec *httptest.ResponseRecorder, want int) {
 }
 
 func floatPtr(value float64) *float64 {
+	return &value
+}
+
+func intPtr(value int) *int {
 	return &value
 }

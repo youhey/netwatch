@@ -119,7 +119,7 @@ func (h *Handler) servicesSeries(w http.ResponseWriter, r *http.Request) {
 		"group":   group,
 		"name":    name,
 		"range":   rangeValue,
-		"samples": h.state.ServiceSeries(group, name, time.Now().Add(-duration)),
+		"samples": filterIgnoredServiceTargets(h.state.ServiceSeries(group, name, time.Now().Add(-duration))),
 	})
 }
 
@@ -203,9 +203,15 @@ type serviceSummaryResponse struct {
 	Group        string  `json:"group"`
 	Category     string  `json:"category,omitempty"`
 	SampleCount  int     `json:"sample_count"`
+	OKCount      int     `json:"ok_count"`
 	OKRate       float64 `json:"ok_rate"`
 	AvgTotalMs   float64 `json:"avg_total_ms"`
 	MaxTotalMs   float64 `json:"max_total_ms"`
+	AvgDNSMs     float64 `json:"avg_dns_ms,omitempty"`
+	AvgConnectMs float64 `json:"avg_connect_ms,omitempty"`
+	AvgTLSMs     float64 `json:"avg_tls_ms,omitempty"`
+	AvgTTFBMs    float64 `json:"avg_ttfb_ms,omitempty"`
+	MaxTTFBMs    float64 `json:"max_ttfb_ms,omitempty"`
 	TimeoutCount int     `json:"timeout_count"`
 	ErrorCount   int     `json:"error_count"`
 }
@@ -213,6 +219,9 @@ type serviceSummaryResponse struct {
 func groupServiceLatest(samples []model.Sample) []serviceGroupResponse {
 	groups := make(map[string]*serviceGroupResponse)
 	for _, sample := range samples {
+		if isIgnoredServiceTarget(sample) {
+			continue
+		}
 		group := sample.Group
 		if group == "" {
 			continue
@@ -255,13 +264,22 @@ func summarizeServices(samples []model.Sample) []serviceSummaryResponse {
 		totalCount   int
 		totalSum     float64
 		maxTotal     float64
+		dnsCount     int
+		dnsSum       float64
+		connectCount int
+		connectSum   float64
+		tlsCount     int
+		tlsSum       float64
+		ttfbCount    int
+		ttfbSum      float64
+		maxTTFB      float64
 		timeoutCount int
 		errorCount   int
 	}
 
 	aggregates := make(map[string]*aggregate)
 	for _, sample := range samples {
-		if sample.Group == "" {
+		if sample.Group == "" || isIgnoredServiceTarget(sample) {
 			continue
 		}
 		if _, ok := aggregates[sample.Group]; !ok {
@@ -275,11 +293,30 @@ func summarizeServices(samples []model.Sample) []serviceSummaryResponse {
 		if sample.OK != nil && *sample.OK {
 			agg.okCount++
 		}
-		if sample.TotalMs != nil {
+		if sample.TotalMs != nil && *sample.TotalMs > 0 {
 			agg.totalCount++
 			agg.totalSum += *sample.TotalMs
 			if *sample.TotalMs > agg.maxTotal {
 				agg.maxTotal = *sample.TotalMs
+			}
+		}
+		if sample.DNSMs != nil {
+			agg.dnsCount++
+			agg.dnsSum += *sample.DNSMs
+		}
+		if sample.ConnectMs != nil {
+			agg.connectCount++
+			agg.connectSum += *sample.ConnectMs
+		}
+		if sample.TLSMs != nil {
+			agg.tlsCount++
+			agg.tlsSum += *sample.TLSMs
+		}
+		if sample.TTFBMs != nil {
+			agg.ttfbCount++
+			agg.ttfbSum += *sample.TTFBMs
+			if *sample.TTFBMs > agg.maxTTFB {
+				agg.maxTTFB = *sample.TTFBMs
 			}
 		}
 		if sample.Error != "" || sample.OK != nil && !*sample.OK {
@@ -304,9 +341,15 @@ func summarizeServices(samples []model.Sample) []serviceSummaryResponse {
 			Group:        group,
 			Category:     agg.category,
 			SampleCount:  agg.sampleCount,
+			OKCount:      agg.okCount,
 			OKRate:       okRate,
 			AvgTotalMs:   avgTotal,
 			MaxTotalMs:   agg.maxTotal,
+			AvgDNSMs:     avgMetric(agg.dnsSum, agg.dnsCount),
+			AvgConnectMs: avgMetric(agg.connectSum, agg.connectCount),
+			AvgTLSMs:     avgMetric(agg.tlsSum, agg.tlsCount),
+			AvgTTFBMs:    avgMetric(agg.ttfbSum, agg.ttfbCount),
+			MaxTTFBMs:    agg.maxTTFB,
 			TimeoutCount: agg.timeoutCount,
 			ErrorCount:   agg.errorCount,
 		})
@@ -333,6 +376,9 @@ func buildMonitoringStatus(samples []model.Sample) monitoringStatusResponse {
 	var messages []string
 
 	for _, sample := range samples {
+		if isIgnoredServiceTarget(sample) {
+			continue
+		}
 		sampleLevel, message := sampleStatus(sample)
 		if sampleLevel == "ok" {
 			continue
@@ -349,7 +395,7 @@ func buildMonitoringStatus(samples []model.Sample) monitoringStatusResponse {
 			Source:  "network",
 			Level:   "ok",
 			Title:   "NET OK",
-			Message: "targets normal",
+			Message: "all probes healthy",
 		}
 	}
 	if len(messages) > 2 {
@@ -397,6 +443,9 @@ func sampleStatus(sample model.Sample) (string, string) {
 	if sample.Name != "gateway" && lossPercent >= 1 {
 		return "warning", message
 	}
+	if sample.Name != "gateway" && sample.RTTAvgMs != nil && *sample.RTTAvgMs >= 200 {
+		return "critical", message
+	}
 	if sample.Name != "gateway" && sample.RTTAvgMs != nil && *sample.RTTAvgMs >= 100 {
 		return "warning", message
 	}
@@ -413,6 +462,9 @@ func dnsStatus(sample model.Sample) (string, string) {
 
 	if sample.Error != "" || sample.OK != nil && !*sample.OK {
 		return "warning", sample.Name + " dns failure"
+	}
+	if duration >= 1000 {
+		return "critical", message
 	}
 	if duration >= 300 {
 		return "warning", message
@@ -438,10 +490,10 @@ func httpStatus(sample model.Sample) (string, string) {
 		}
 		return "warning", label + " http failure"
 	}
-	if sample.Group != "" && total >= 3000 {
-		return "warning", message
+	if total >= 5000 {
+		return "critical", message
 	}
-	if sample.Group == "" && total >= 2000 {
+	if total >= 3000 {
 		return "warning", message
 	}
 
@@ -457,6 +509,28 @@ func sortSamplesByName(samples []model.Sample) {
 func isTimeoutError(value string) bool {
 	value = strings.ToLower(value)
 	return strings.Contains(value, "timeout") || strings.Contains(value, "deadline exceeded")
+}
+
+func isIgnoredServiceTarget(sample model.Sample) bool {
+	return sample.Name == "sf6_buckler_info"
+}
+
+func filterIgnoredServiceTargets(samples []model.Sample) []model.Sample {
+	var filtered []model.Sample
+	for _, sample := range samples {
+		if isIgnoredServiceTarget(sample) {
+			continue
+		}
+		filtered = append(filtered, sample)
+	}
+	return filtered
+}
+
+func avgMetric(sum float64, count int) float64 {
+	if count == 0 {
+		return 0
+	}
+	return sum / float64(count)
 }
 
 func severityRank(level string) int {

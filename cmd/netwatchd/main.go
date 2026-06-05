@@ -29,6 +29,9 @@ func main() {
 	}
 
 	jsonl := storage.NewJSONL(cfg.DataPath)
+	if cfg.DataDir != "" {
+		jsonl = storage.NewRotatingJSONL(cfg.DataDir, cfg.DataFilePattern, cfg.RetentionDays)
+	}
 	state := collector.NewState()
 
 	samples, err := jsonl.Load()
@@ -41,7 +44,8 @@ func main() {
 	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	c := collector.New(cfg, probe.Fping{}, probe.DNS{}, probe.HTTP{}, jsonl, state)
+	httpProbe := probe.NewHTTP(cfg.HTTPDisableKeepAlive, cfg.HTTPMaxBodyBytes)
+	c := collector.New(cfg, probe.Fping{}, probe.DNS{}, httpProbe, jsonl, state)
 	go c.Run(rootCtx)
 
 	server := &http.Server{

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -48,6 +49,68 @@ func TestTargetIntervalAndTimeoutDefault(t *testing.T) {
 	}
 	if got := cfg.TimeoutSeconds(target); got != cfg.HTTPTimeoutSeconds {
 		t.Fatalf("TimeoutSeconds() = %d, want %d", got, cfg.HTTPTimeoutSeconds)
+	}
+}
+
+func TestValidatePhase35Settings(t *testing.T) {
+	cfg := Default()
+	cfg.DataPath = ""
+	cfg.DataDir = "/var/lib/netwatch"
+	cfg.DataFilePattern = "samples-%Y-%m-%d.jsonl"
+	cfg.RetentionDays = 14
+	cfg.HTTPDisableKeepAlive = true
+	cfg.HTTPMaxBodyBytes = 262144
+	cfg.Targets = []TargetConfig{
+		{Name: "home", Type: "http", Group: "baseline", Category: "baseline", URL: "https://example.com/"},
+	}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestLoadPhase35Settings(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "netwatch.json")
+	content := `{
+  "listen_addr": "127.0.0.1:8080",
+  "data_dir": "/var/lib/netwatch",
+  "data_file_pattern": "samples-%Y-%m-%d.jsonl",
+  "retention_days": 7,
+  "http_disable_keepalive": false,
+  "http_max_body_bytes": 131072,
+  "targets": [
+    {
+      "name": "home",
+      "type": "http",
+      "group": "baseline",
+      "category": "baseline",
+      "url": "https://example.com/"
+    }
+  ]
+}`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.DataDir != "/var/lib/netwatch" || cfg.RetentionDays != 7 || cfg.HTTPDisableKeepAlive || cfg.HTTPMaxBodyBytes != 131072 {
+		t.Fatalf("cfg = %+v, want Phase 3.5 settings loaded", cfg)
+	}
+}
+
+func TestValidateLegacyDataPath(t *testing.T) {
+	cfg := Default()
+	cfg.DataPath = "/var/lib/netwatch/samples.jsonl"
+	cfg.DataDir = ""
+	cfg.Targets = []TargetConfig{
+		{Name: "home", Type: "http", URL: "https://example.com/"},
+	}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
 	}
 }
 
@@ -116,13 +179,19 @@ func TestLoadExampleConfig(t *testing.T) {
 		t.Fatalf("len(Targets) = %d, want Phase 3 service targets", len(cfg.Targets))
 	}
 	found := false
+	foundSF6 := false
 	for _, target := range cfg.Targets {
 		if target.Name == "youtube_home" && target.Group == "youtube" && target.IntervalSeconds == 300 {
 			found = true
-			break
+		}
+		if target.Name == "sf6_buckler_info" {
+			foundSF6 = true
 		}
 	}
 	if !found {
 		t.Fatal("youtube_home Phase 3 target not found")
+	}
+	if foundSF6 {
+		t.Fatal("sf6_buckler_info should not be in example config")
 	}
 }

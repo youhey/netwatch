@@ -1,6 +1,8 @@
 {
   "listen_addr": "0.0.0.0:8080",
-  "data_path": "/var/lib/netwatch/samples.jsonl",
+  "data_dir": "/var/lib/netwatch",
+  "data_file_pattern": "samples-%Y-%m-%d.jsonl",
+  "retention_days": 14,
   "ping_interval_seconds": 30,
   "ping_count": 10,
   "ping_timeout_seconds": 15,
@@ -8,6 +10,8 @@
   "dns_timeout_seconds": 5,
   "http_interval_seconds": 60,
   "http_timeout_seconds": 10,
+  "http_disable_keepalive": true,
+  "http_max_body_bytes": 262144,
   "targets": [
     {
       "name": "gateway",
@@ -113,14 +117,6 @@
       "group": "pcgame",
       "category": "game",
       "url": "https://help.ea.com/en/server-status/",
-      "interval_seconds": 300
-    },
-    {
-      "name": "sf6_buckler_info",
-      "type": "http",
-      "group": "pcgame",
-      "category": "game",
-      "url": "https://www.streetfighter.com/6/buckler/en/information/all/1",
       "interval_seconds": 300
     }
   ]

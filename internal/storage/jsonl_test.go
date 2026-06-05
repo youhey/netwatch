@@ -71,3 +71,64 @@ func TestAppendMixedSamples(t *testing.T) {
 		t.Fatalf("loaded[2] = %+v, want group/category restored", loaded[2])
 	}
 }
+
+func TestRotatingJSONLAppendUsesDailyFile(t *testing.T) {
+	dir := t.TempDir()
+	jsonl := NewRotatingJSONL(dir, "samples-%Y-%m-%d.jsonl", 14)
+	ok := true
+
+	if err := jsonl.Append(model.Sample{Timestamp: time.Now().UTC(), Type: "http", Name: "home", OK: &ok}); err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+
+	path := filepath.Join(dir, "samples-"+time.Now().Format("2006-01-02")+".jsonl")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("Stat(%s) error = %v", path, err)
+	}
+}
+
+func TestRotatingJSONLLoadMultipleDaysAndCleanup(t *testing.T) {
+	dir := t.TempDir()
+	oldPath := filepath.Join(dir, "samples-"+time.Now().AddDate(0, 0, -20).Format("2006-01-02")+".jsonl")
+	recentPath := filepath.Join(dir, "samples-"+time.Now().AddDate(0, 0, -1).Format("2006-01-02")+".jsonl")
+	todayPath := filepath.Join(dir, "samples-"+time.Now().Format("2006-01-02")+".jsonl")
+
+	for path, name := range map[string]string{
+		oldPath:    "old",
+		recentPath: "recent",
+		todayPath:  "today",
+	} {
+		content := `{"ts":"` + time.Now().UTC().Format(time.RFC3339Nano) + `","type":"http","group":"youtube","name":"` + name + `","ok":true}` + "\n"
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatalf("WriteFile(%s) error = %v", path, err)
+		}
+	}
+
+	samples, err := NewRotatingJSONL(dir, "samples-%Y-%m-%d.jsonl", 14).Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(samples) != 2 {
+		t.Fatalf("len(samples) = %d, want 2", len(samples))
+	}
+	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
+		t.Fatalf("old file still exists or unexpected error: %v", err)
+	}
+}
+
+func TestSingleDataPathStillWorks(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "samples.jsonl")
+	jsonl := NewJSONL(path)
+	ok := true
+
+	if err := jsonl.Append(model.Sample{Timestamp: time.Now().UTC(), Type: "ping", Name: "ping", OK: &ok}); err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+	samples, err := jsonl.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(samples) != 1 {
+		t.Fatalf("len(samples) = %d, want 1", len(samples))
+	}
+}

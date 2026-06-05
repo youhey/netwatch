@@ -23,14 +23,16 @@ type Sample struct {
 	DurationMs  *float64 `json:"duration_ms,omitempty"`
 	ResolvedIPs []string `json:"resolved_ips,omitempty"`
 
-	URL           string   `json:"url,omitempty"`
-	Method        string   `json:"method,omitempty"`
-	HTTPStatus    *int     `json:"http_status,omitempty"`
-	DNSMs         *float64 `json:"dns_ms,omitempty"`
-	ConnectMs     *float64 `json:"connect_ms,omitempty"`
-	TLSMs         *float64 `json:"tls_ms,omitempty"`
-	TTFBMs        *float64 `json:"ttfb_ms,omitempty"`
-	TotalMs       *float64 `json:"total_ms,omitempty"`
-	RemoteAddr    string   `json:"remote_addr,omitempty"`
-	ContentLength *int64   `json:"content_length,omitempty"`
+	URL               string   `json:"url,omitempty"`
+	Method            string   `json:"method,omitempty"`
+	HTTPStatus        *int     `json:"http_status,omitempty"`
+	DNSMs             *float64 `json:"dns_ms,omitempty"`
+	ConnectMs         *float64 `json:"connect_ms,omitempty"`
+	TLSMs             *float64 `json:"tls_ms,omitempty"`
+	TTFBMs            *float64 `json:"ttfb_ms,omitempty"`
+	TotalMs           *float64 `json:"total_ms,omitempty"`
+	RemoteAddr        string   `json:"remote_addr,omitempty"`
+	ContentLength     *int64   `json:"content_length,omitempty"`
+	ContentLengthRead *int64   `json:"content_length_read,omitempty"`
+	BodyTruncated     *bool    `json:"body_truncated,omitempty"`
 }

@@ -10,16 +10,21 @@ import (
 )
 
 type Config struct {
-	ListenAddr          string         `json:"listen_addr"`
-	DataPath            string         `json:"data_path"`
-	PingIntervalSeconds int            `json:"ping_interval_seconds"`
-	PingCount           int            `json:"ping_count"`
-	PingTimeoutSeconds  int            `json:"ping_timeout_seconds"`
-	DNSIntervalSeconds  int            `json:"dns_interval_seconds"`
-	DNSTimeoutSeconds   int            `json:"dns_timeout_seconds"`
-	HTTPIntervalSeconds int            `json:"http_interval_seconds"`
-	HTTPTimeoutSeconds  int            `json:"http_timeout_seconds"`
-	Targets             []TargetConfig `json:"targets"`
+	ListenAddr           string         `json:"listen_addr"`
+	DataPath             string         `json:"data_path"`
+	DataDir              string         `json:"data_dir"`
+	DataFilePattern      string         `json:"data_file_pattern"`
+	RetentionDays        int            `json:"retention_days"`
+	PingIntervalSeconds  int            `json:"ping_interval_seconds"`
+	PingCount            int            `json:"ping_count"`
+	PingTimeoutSeconds   int            `json:"ping_timeout_seconds"`
+	DNSIntervalSeconds   int            `json:"dns_interval_seconds"`
+	DNSTimeoutSeconds    int            `json:"dns_timeout_seconds"`
+	HTTPIntervalSeconds  int            `json:"http_interval_seconds"`
+	HTTPTimeoutSeconds   int            `json:"http_timeout_seconds"`
+	HTTPDisableKeepAlive bool           `json:"http_disable_keepalive"`
+	HTTPMaxBodyBytes     int64          `json:"http_max_body_bytes"`
+	Targets              []TargetConfig `json:"targets"`
 }
 
 type TargetConfig struct {
@@ -54,15 +59,19 @@ func Load(path string) (Config, error) {
 
 func Default() Config {
 	return Config{
-		ListenAddr:          "0.0.0.0:8080",
-		DataPath:            "/var/lib/netwatch/samples.jsonl",
-		PingIntervalSeconds: 30,
-		PingCount:           10,
-		PingTimeoutSeconds:  15,
-		DNSIntervalSeconds:  60,
-		DNSTimeoutSeconds:   5,
-		HTTPIntervalSeconds: 60,
-		HTTPTimeoutSeconds:  10,
+		ListenAddr:           "0.0.0.0:8080",
+		DataPath:             "/var/lib/netwatch/samples.jsonl",
+		DataFilePattern:      "samples-%Y-%m-%d.jsonl",
+		RetentionDays:        14,
+		PingIntervalSeconds:  30,
+		PingCount:            10,
+		PingTimeoutSeconds:   15,
+		DNSIntervalSeconds:   60,
+		DNSTimeoutSeconds:    5,
+		HTTPIntervalSeconds:  60,
+		HTTPTimeoutSeconds:   10,
+		HTTPDisableKeepAlive: true,
+		HTTPMaxBodyBytes:     262144,
 	}
 }
 
@@ -70,8 +79,14 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.ListenAddr) == "" {
 		return errors.New("listen_addr is required")
 	}
-	if strings.TrimSpace(c.DataPath) == "" {
-		return errors.New("data_path is required")
+	if strings.TrimSpace(c.DataPath) == "" && strings.TrimSpace(c.DataDir) == "" {
+		return errors.New("data_path or data_dir is required")
+	}
+	if strings.TrimSpace(c.DataDir) != "" && strings.TrimSpace(c.DataFilePattern) == "" {
+		return errors.New("data_file_pattern is required when data_dir is set")
+	}
+	if c.RetentionDays <= 0 {
+		return errors.New("retention_days must be greater than 0")
 	}
 	if c.PingIntervalSeconds <= 0 {
 		return errors.New("ping_interval_seconds must be greater than 0")
@@ -93,6 +108,9 @@ func (c Config) Validate() error {
 	}
 	if c.HTTPTimeoutSeconds <= 0 {
 		return errors.New("http_timeout_seconds must be greater than 0")
+	}
+	if c.HTTPMaxBodyBytes <= 0 {
+		return errors.New("http_max_body_bytes must be greater than 0")
 	}
 	if len(c.Targets) == 0 {
 		return errors.New("targets must not be empty")

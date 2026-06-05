@@ -203,6 +203,8 @@ func (c *Collector) measureHTTP(ctx context.Context, target config.TargetConfig)
 	sample.TotalMs = &result.TotalMs
 	sample.RemoteAddr = result.RemoteAddr
 	sample.ContentLength = result.ContentLength
+	sample.ContentLengthRead = &result.ContentLengthRead
+	sample.BodyTruncated = &result.BodyTruncated
 
 	return sample
 }
