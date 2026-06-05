@@ -41,7 +41,7 @@ func main() {
 	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	c := collector.New(cfg, probe.Fping{}, jsonl, state)
+	c := collector.New(cfg, probe.Fping{}, probe.DNS{}, probe.HTTP{}, jsonl, state)
 	go c.Run(rootCtx)
 
 	server := &http.Server{

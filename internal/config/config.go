@@ -14,13 +14,20 @@ type Config struct {
 	PingIntervalSeconds int            `json:"ping_interval_seconds"`
 	PingCount           int            `json:"ping_count"`
 	PingTimeoutSeconds  int            `json:"ping_timeout_seconds"`
+	DNSIntervalSeconds  int            `json:"dns_interval_seconds"`
+	DNSTimeoutSeconds   int            `json:"dns_timeout_seconds"`
+	HTTPIntervalSeconds int            `json:"http_interval_seconds"`
+	HTTPTimeoutSeconds  int            `json:"http_timeout_seconds"`
 	Targets             []TargetConfig `json:"targets"`
 }
 
 type TargetConfig struct {
-	Name   string `json:"name"`
-	Type   string `json:"type"`
-	Target string `json:"target"`
+	Name     string `json:"name"`
+	Type     string `json:"type"`
+	Target   string `json:"target"`
+	Hostname string `json:"hostname"`
+	URL      string `json:"url"`
+	Method   string `json:"method"`
 }
 
 func Load(path string) (Config, error) {
@@ -47,6 +54,10 @@ func Default() Config {
 		PingIntervalSeconds: 30,
 		PingCount:           10,
 		PingTimeoutSeconds:  15,
+		DNSIntervalSeconds:  60,
+		DNSTimeoutSeconds:   5,
+		HTTPIntervalSeconds: 60,
+		HTTPTimeoutSeconds:  10,
 	}
 }
 
@@ -66,6 +77,18 @@ func (c Config) Validate() error {
 	if c.PingTimeoutSeconds <= 0 {
 		return errors.New("ping_timeout_seconds must be greater than 0")
 	}
+	if c.DNSIntervalSeconds <= 0 {
+		return errors.New("dns_interval_seconds must be greater than 0")
+	}
+	if c.DNSTimeoutSeconds <= 0 {
+		return errors.New("dns_timeout_seconds must be greater than 0")
+	}
+	if c.HTTPIntervalSeconds <= 0 {
+		return errors.New("http_interval_seconds must be greater than 0")
+	}
+	if c.HTTPTimeoutSeconds <= 0 {
+		return errors.New("http_timeout_seconds must be greater than 0")
+	}
 	if len(c.Targets) == 0 {
 		return errors.New("targets must not be empty")
 	}
@@ -80,11 +103,24 @@ func (c Config) Validate() error {
 		}
 		names[target.Name] = struct{}{}
 
-		if target.Type != "ping" {
-			return fmt.Errorf("targets[%d].type must be ping in Phase 1", i)
-		}
-		if strings.TrimSpace(target.Target) == "" {
-			return fmt.Errorf("targets[%d].target is required", i)
+		switch target.Type {
+		case "ping":
+			if strings.TrimSpace(target.Target) == "" {
+				return fmt.Errorf("targets[%d].target is required for ping target", i)
+			}
+		case "dns":
+			if strings.TrimSpace(target.Hostname) == "" {
+				return fmt.Errorf("targets[%d].hostname is required for dns target", i)
+			}
+		case "http":
+			if strings.TrimSpace(target.URL) == "" {
+				return fmt.Errorf("targets[%d].url is required for http target", i)
+			}
+			if target.Method != "" && strings.ToUpper(target.Method) != "GET" {
+				return fmt.Errorf("targets[%d].method must be GET in Phase 2", i)
+			}
+		default:
+			return fmt.Errorf("targets[%d].type must be one of ping, dns, http", i)
 		}
 	}
 

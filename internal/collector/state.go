@@ -84,6 +84,21 @@ func (s *State) Series(name string, since time.Time) []model.Sample {
 	return samples
 }
 
+func (s *State) SeriesByType(sampleType, name string, since time.Time) []model.Sample {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var samples []model.Sample
+	for _, sample := range s.series {
+		if sample.Type == sampleType && sample.Name == name && !sample.Timestamp.Before(since) {
+			samples = append(samples, sample)
+		}
+	}
+	sortSamples(samples)
+
+	return samples
+}
+
 func sortSamples(samples []model.Sample) {
 	sort.SliceStable(samples, func(i, j int) bool {
 		if samples[i].Name == samples[j].Name {

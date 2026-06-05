@@ -1,0 +1,119 @@
+package probe
+
+import (
+	"context"
+	"crypto/tls"
+	"io"
+	"net/http"
+	"net/http/httptrace"
+	"time"
+)
+
+const UserAgent = "netwatch/0.2"
+
+type HTTPResult struct {
+	OK            bool
+	HTTPStatus    *int
+	DNSMs         *float64
+	ConnectMs     *float64
+	TLSMs         *float64
+	TTFBMs        *float64
+	TotalMs       float64
+	RemoteAddr    string
+	ContentLength *int64
+}
+
+type HTTP struct {
+	Client *http.Client
+}
+
+func (p HTTP) Get(ctx context.Context, url string) (HTTPResult, error) {
+	client := p.Client
+	if client == nil {
+		client = http.DefaultClient
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return HTTPResult{}, err
+	}
+	req.Header.Set("User-Agent", UserAgent)
+
+	var dnsStart, connectStart, tlsStart, requestStart time.Time
+	var result HTTPResult
+
+	start := time.Now()
+	trace := &httptrace.ClientTrace{
+		DNSStart: func(httptrace.DNSStartInfo) {
+			dnsStart = time.Now()
+		},
+		DNSDone: func(httptrace.DNSDoneInfo) {
+			if !dnsStart.IsZero() {
+				result.DNSMs = floatPtr(durationMs(dnsStart, time.Now()))
+			}
+		},
+		ConnectStart: func(_, _ string) {
+			connectStart = time.Now()
+		},
+		ConnectDone: func(_, addr string, _ error) {
+			if !connectStart.IsZero() {
+				result.ConnectMs = floatPtr(durationMs(connectStart, time.Now()))
+			}
+			result.RemoteAddr = addr
+		},
+		TLSHandshakeStart: func() {
+			tlsStart = time.Now()
+		},
+		TLSHandshakeDone: func(tls.ConnectionState, error) {
+			if !tlsStart.IsZero() {
+				result.TLSMs = floatPtr(durationMs(tlsStart, time.Now()))
+			}
+		},
+		WroteRequest: func(httptrace.WroteRequestInfo) {
+			requestStart = time.Now()
+		},
+		GotFirstResponseByte: func() {
+			if !requestStart.IsZero() {
+				result.TTFBMs = floatPtr(durationMs(requestStart, time.Now()))
+			} else {
+				result.TTFBMs = floatPtr(durationMs(start, time.Now()))
+			}
+		},
+	}
+	req = req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
+
+	resp, err := client.Do(req)
+	result.TotalMs = durationMs(start, time.Now())
+	if err != nil {
+		return result, err
+	}
+	defer resp.Body.Close()
+
+	status := resp.StatusCode
+	result.HTTPStatus = &status
+	result.OK = status >= 200 && status < 400
+	if resp.ContentLength >= 0 {
+		result.ContentLength = &resp.ContentLength
+	}
+
+	_, readErr := io.Copy(io.Discard, resp.Body)
+	result.TotalMs = durationMs(start, time.Now())
+	if readErr != nil {
+		result.OK = false
+		return result, readErr
+	}
+
+	if !result.OK {
+		return result, nil
+	}
+
+	return result, nil
+}
+
+func durationMs(start, end time.Time) float64 {
+	return float64(end.Sub(start).Microseconds()) / 1000
+}
+
+func floatPtr(value float64) *float64 {
+	return &value
+}

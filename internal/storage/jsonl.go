@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"errors"
-	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -72,7 +72,8 @@ func (s *JSONL) Load() ([]model.Sample, error) {
 
 		var sample model.Sample
 		if err := json.Unmarshal(line, &sample); err != nil {
-			return nil, fmt.Errorf("parse %s line %d: %w", s.path, lineNumber, err)
+			log.Printf("skip invalid JSONL line: path=%s line=%d error=%v", s.path, lineNumber, err)
+			continue
 		}
 		samples = append(samples, sample)
 	}

@@ -4,6 +4,10 @@
   "ping_interval_seconds": 30,
   "ping_count": 10,
   "ping_timeout_seconds": 15,
+  "dns_interval_seconds": 60,
+  "dns_timeout_seconds": 5,
+  "http_interval_seconds": 60,
+  "http_timeout_seconds": 10,
   "targets": [
     {
       "name": "gateway",
@@ -19,6 +23,21 @@
       "name": "google_dns",
       "type": "ping",
       "target": "8.8.8.8"
+    },
+    {
+      "name": "google_dns_lookup",
+      "type": "dns",
+      "hostname": "www.google.com"
+    },
+    {
+      "name": "cloudflare_home",
+      "type": "http",
+      "url": "https://www.cloudflare.com/"
+    },
+    {
+      "name": "google_generate_204",
+      "type": "http",
+      "url": "https://www.google.com/generate_204"
     }
   ]
 }
