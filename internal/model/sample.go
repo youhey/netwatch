@@ -3,13 +3,15 @@ package model
 import "time"
 
 type Sample struct {
-	Timestamp time.Time `json:"ts"`
-	Type      string    `json:"type"`
-	Name      string    `json:"name"`
-	Group     string    `json:"group,omitempty"`
-	Category  string    `json:"category,omitempty"`
-	OK        *bool     `json:"ok,omitempty"`
-	Error     string    `json:"error,omitempty"`
+	Timestamp    time.Time `json:"ts"`
+	Type         string    `json:"type"`
+	Name         string    `json:"name"`
+	Group        string    `json:"group,omitempty"`
+	Category     string    `json:"category,omitempty"`
+	DisplayName  string    `json:"display_name,omitempty"`
+	DisplayOrder int       `json:"display_order,omitempty"`
+	OK           *bool     `json:"ok,omitempty"`
+	Error        string    `json:"error,omitempty"`
 
 	Target      string   `json:"target,omitempty"`
 	Sent        int      `json:"sent,omitempty"`

@@ -96,16 +96,16 @@ func (h *Handler) capabilities(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) latest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ping":     h.state.LatestByType("ping"),
-		"dns":      h.state.LatestByType("dns"),
-		"http":     h.state.LatestByType("http"),
-		"download": h.state.LatestByType("download"),
+		"ping":     h.latestByType("ping"),
+		"dns":      h.latestByType("dns"),
+		"http":     h.latestByType("http"),
+		"download": h.latestByType("download"),
 	})
 }
 
 func (h *Handler) pingLatest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"samples": h.state.LatestByType("ping"),
+		"samples": h.latestByType("ping"),
 	})
 }
 
@@ -115,7 +115,7 @@ func (h *Handler) pingSeries(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) dnsLatest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"samples": h.state.LatestByType("dns"),
+		"samples": h.latestByType("dns"),
 	})
 }
 
@@ -125,7 +125,7 @@ func (h *Handler) dnsSeries(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) httpLatest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"samples": h.state.LatestByType("http"),
+		"samples": h.latestByType("http"),
 	})
 }
 
@@ -135,7 +135,7 @@ func (h *Handler) httpSeries(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) downloadLatest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"samples": h.state.LatestByType("download"),
+		"samples": h.latestByType("download"),
 	})
 }
 
@@ -145,7 +145,7 @@ func (h *Handler) downloadSeries(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) servicesLatest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"services": groupServiceLatest(h.state.LatestServices()),
+		"services": groupServiceLatest(h.latestServices()),
 	})
 }
 
@@ -188,7 +188,7 @@ func (h *Handler) servicesSeries(w http.ResponseWriter, r *http.Request) {
 		}
 		end := time.Now()
 		start := end.Add(-duration)
-		samples := filterIgnoredServiceTargets(h.state.ServiceSeries(group, name, start))
+		samples := filterIgnoredServiceTargets(h.serviceSeries(group, name, start))
 		if len(samples) == 0 {
 			code := "group_not_found"
 			param := "group"
@@ -207,7 +207,7 @@ func (h *Handler) servicesSeries(w http.ResponseWriter, r *http.Request) {
 		"group":   group,
 		"name":    name,
 		"range":   rangeValue,
-		"samples": filterIgnoredServiceTargets(h.state.ServiceSeries(group, name, time.Now().Add(-duration))),
+		"samples": filterIgnoredServiceTargets(h.serviceSeries(group, name, time.Now().Add(-duration))),
 	})
 }
 
@@ -229,7 +229,7 @@ func (h *Handler) servicesSummary(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"range":  rangeValue,
-		"groups": summarizeServices(h.state.ServiceSeries(group, "", time.Now().Add(-duration))),
+		"groups": summarizeServices(h.serviceSeries(group, "", time.Now().Add(-duration))),
 	})
 }
 
@@ -263,7 +263,7 @@ func (h *Handler) series(w http.ResponseWriter, r *http.Request, sampleType stri
 		}
 		end := time.Now()
 		start := end.Add(-duration)
-		samples := h.state.SeriesByType(sampleType, name, start)
+		samples := h.seriesByType(sampleType, name, start)
 		if len(samples) == 0 {
 			writeStructuredError(w, http.StatusNotFound, "target_not_found", "chart series not found", "name", nil)
 			return
@@ -275,12 +275,12 @@ func (h *Handler) series(w http.ResponseWriter, r *http.Request, sampleType stri
 	writeJSON(w, http.StatusOK, map[string]any{
 		"name":                        name,
 		"range":                       rangeValue,
-		seriesResponseKey(sampleType): h.state.SeriesByType(sampleType, name, time.Now().Add(-duration)),
+		seriesResponseKey(sampleType): h.seriesByType(sampleType, name, time.Now().Add(-duration)),
 	})
 }
 
 func (h *Handler) monitoringStatus(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, buildMonitoringStatus(h.state.LatestAll()))
+	writeJSON(w, http.StatusOK, buildMonitoringStatus(h.applyDisplayMetadata(h.state.LatestAll())))
 }
 
 func (h *Handler) monitoringThresholds(w http.ResponseWriter, r *http.Request) {
@@ -302,6 +302,73 @@ func (h *Handler) monitoringThresholds(w http.ResponseWriter, r *http.Request) {
 			"ok_rate_percent": map[string]float64{"warning": 95, "critical": 90},
 		},
 	})
+}
+
+func (h *Handler) latestByType(sampleType string) []model.Sample {
+	return h.applyDisplayMetadata(h.state.LatestByType(sampleType))
+}
+
+func (h *Handler) seriesByType(sampleType, name string, since time.Time) []model.Sample {
+	return h.applyDisplayMetadata(h.state.SeriesByType(sampleType, name, since))
+}
+
+func (h *Handler) latestServices() []model.Sample {
+	return h.applyDisplayMetadata(h.state.LatestServices())
+}
+
+func (h *Handler) serviceSeries(group, name string, since time.Time) []model.Sample {
+	return h.applyDisplayMetadata(h.state.ServiceSeries(group, name, since))
+}
+
+func (h *Handler) applyDisplayMetadata(samples []model.Sample) []model.Sample {
+	ordered := append([]model.Sample(nil), samples...)
+	for i := range ordered {
+		if ordered[i].DisplayOrder > 0 {
+			ordered[i].DisplayName = h.displayNameFor(ordered[i])
+		} else {
+			ordered[i].DisplayOrder = h.displayOrderFor(ordered[i].Name)
+			ordered[i].DisplayName = h.displayNameFor(ordered[i])
+		}
+	}
+	sortSamplesForDisplay(ordered)
+	return ordered
+}
+
+func (h *Handler) displayOrderFor(name string) int {
+	for _, target := range h.targets {
+		if target.Name == name {
+			return target.DisplayOrder
+		}
+	}
+	for _, probe := range h.downloadProbes {
+		if probe.Name == name {
+			return probe.DisplayOrder
+		}
+	}
+	return 0
+}
+
+func (h *Handler) displayNameFor(sample model.Sample) string {
+	for _, target := range h.targets {
+		if target.Name == sample.Name {
+			if strings.TrimSpace(target.Label) != "" {
+				return target.Label
+			}
+			return labelForName(target.Name)
+		}
+	}
+	for _, probe := range h.downloadProbes {
+		if probe.Name == sample.Name {
+			if strings.TrimSpace(probe.Label) != "" {
+				return probe.Label
+			}
+			return labelForName(probe.Name)
+		}
+	}
+	if strings.TrimSpace(sample.DisplayName) != "" {
+		return sample.DisplayName
+	}
+	return labelForName(sample.Name)
 }
 
 func parseRange(value string) (time.Duration, error) {
@@ -330,14 +397,16 @@ type monitoringStatusResponse struct {
 }
 
 type serviceGroupResponse struct {
-	Group    string         `json:"group"`
-	Category string         `json:"category,omitempty"`
-	Status   string         `json:"status"`
-	Targets  []model.Sample `json:"targets"`
+	Group       string         `json:"group"`
+	DisplayName string         `json:"display_name"`
+	Category    string         `json:"category,omitempty"`
+	Status      string         `json:"status"`
+	Targets     []model.Sample `json:"targets"`
 }
 
 type serviceSummaryResponse struct {
 	Group        string  `json:"group"`
+	DisplayName  string  `json:"display_name"`
 	Category     string  `json:"category,omitempty"`
 	SampleCount  int     `json:"sample_count"`
 	OKCount      int     `json:"ok_count"`
@@ -365,9 +434,10 @@ func groupServiceLatest(samples []model.Sample) []serviceGroupResponse {
 		}
 		if _, ok := groups[group]; !ok {
 			groups[group] = &serviceGroupResponse{
-				Group:    group,
-				Category: sample.Category,
-				Status:   "ok",
+				Group:       group,
+				DisplayName: labelForName(group),
+				Category:    sample.Category,
+				Status:      "ok",
 			}
 		}
 		entry := groups[group]
@@ -383,7 +453,7 @@ func groupServiceLatest(samples []model.Sample) []serviceGroupResponse {
 
 	result := make([]serviceGroupResponse, 0, len(groups))
 	for _, group := range groups {
-		sortSamplesByName(group.Targets)
+		sortSamplesForDisplay(group.Targets)
 		result = append(result, *group)
 	}
 	sort.SliceStable(result, func(i, j int) bool {
@@ -476,6 +546,7 @@ func summarizeServices(samples []model.Sample) []serviceSummaryResponse {
 		}
 		result = append(result, serviceSummaryResponse{
 			Group:        group,
+			DisplayName:  labelForName(group),
 			Category:     agg.category,
 			SampleCount:  agg.sampleCount,
 			OKCount:      agg.okCount,
@@ -681,8 +752,13 @@ func downloadThresholdsResponse() map[string]map[string]float64 {
 	return result
 }
 
-func sortSamplesByName(samples []model.Sample) {
+func sortSamplesForDisplay(samples []model.Sample) {
 	sort.SliceStable(samples, func(i, j int) bool {
+		leftOrder := displayOrderRank(samples[i].DisplayOrder)
+		rightOrder := displayOrderRank(samples[j].DisplayOrder)
+		if leftOrder != rightOrder {
+			return leftOrder < rightOrder
+		}
 		return samples[i].Name < samples[j].Name
 	})
 }

@@ -52,8 +52,10 @@ func TestMeasureHTTPUsesTargetMetadataAndTimeout(t *testing.T) {
 		Type:           "http",
 		Group:          "youtube",
 		Category:       "service",
+		Label:          "YouTube Home",
 		URL:            "https://www.youtube.com/",
 		TimeoutSeconds: 3,
+		DisplayOrder:   10,
 	}
 	collector := New(cfg, nil, nil, httpProbe, nil, nil, NewState())
 
@@ -61,7 +63,7 @@ func TestMeasureHTTPUsesTargetMetadataAndTimeout(t *testing.T) {
 	sample := collector.measureHTTP(context.Background(), target)
 	remaining := time.Until(httpProbe.deadline)
 
-	if sample.Group != "youtube" || sample.Category != "service" {
+	if sample.Group != "youtube" || sample.Category != "service" || sample.DisplayName != "YouTube Home" || sample.DisplayOrder != 10 {
 		t.Fatalf("sample = %+v, want group/category metadata", sample)
 	}
 	if sample.TotalMs == nil || *sample.TotalMs != 12.3 {
@@ -78,10 +80,12 @@ func TestMeasureDownloadUsesProbeTimeoutAndRecordsMetrics(t *testing.T) {
 	target := config.DownloadProbeConfig{
 		Name:            "r2_1mb",
 		URL:             "https://example.com/netwatch-1mb.bin",
+		Label:           "R2 1MB",
 		ExpectedBytes:   1048576,
 		TimeoutSeconds:  3,
 		IntervalSeconds: 600,
 		Enabled:         true,
+		DisplayOrder:    10,
 	}
 	collector := New(cfg, nil, nil, nil, downloadProbe, nil, NewState())
 
@@ -89,7 +93,7 @@ func TestMeasureDownloadUsesProbeTimeoutAndRecordsMetrics(t *testing.T) {
 	sample := collector.measureDownload(context.Background(), target)
 	remaining := time.Until(downloadProbe.deadline)
 
-	if sample.Type != "download" || sample.URL != target.URL || sample.ExpectedBytes == nil || *sample.ExpectedBytes != target.ExpectedBytes {
+	if sample.Type != "download" || sample.URL != target.URL || sample.DisplayName != "R2 1MB" || sample.DisplayOrder != 10 || sample.ExpectedBytes == nil || *sample.ExpectedBytes != target.ExpectedBytes {
 		t.Fatalf("sample = %+v, want download metadata", sample)
 	}
 	if sample.DownloadedBytes == nil || *sample.DownloadedBytes != target.ExpectedBytes || sample.Mbps == nil || *sample.Mbps <= 0 {

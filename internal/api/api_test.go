@@ -56,6 +56,12 @@ func TestLatestGroupsSamplesByType(t *testing.T) {
 	if len(body["ping"]) != 1 || len(body["dns"]) != 1 || len(body["http"]) != 4 || len(body["download"]) != 1 {
 		t.Fatalf("counts = ping:%d dns:%d http:%d download:%d, want ping:1 dns:1 http:4 download:1", len(body["ping"]), len(body["dns"]), len(body["http"]), len(body["download"]))
 	}
+	if body["download"][0].DisplayOrder != 10 {
+		t.Fatalf("download display_order = %d, want 10", body["download"][0].DisplayOrder)
+	}
+	if body["download"][0].DisplayName != "R2 1MB" {
+		t.Fatalf("download display_name = %q, want R2 1MB", body["download"][0].DisplayName)
+	}
 }
 
 func TestDNSLatest(t *testing.T) {
@@ -88,6 +94,36 @@ func TestDownloadLatest(t *testing.T) {
 	assertSampleCount(t, rec, 1)
 }
 
+func TestLatestBackfillsDisplayOrderFromConfig(t *testing.T) {
+	state := collector.NewState()
+	ok := true
+	state.Load([]model.Sample{
+		{Timestamp: time.Now(), Type: "ping", Name: "cloudflare_dns", OK: &ok},
+		{Timestamp: time.Now(), Type: "ping", Name: "gateway", OK: &ok},
+		{Timestamp: time.Now(), Type: "ping", Name: "google_dns", OK: &ok},
+	})
+	targets := []config.TargetConfig{
+		{Name: "gateway", Label: "Gateway", DisplayOrder: 10, Type: "ping", Target: "192.168.1.1"},
+		{Name: "google_dns", Label: "Google DNS", DisplayOrder: 20, Type: "ping", Target: "8.8.8.8"},
+		{Name: "cloudflare_dns", Label: "Cloudflare DNS", DisplayOrder: 30, Type: "ping", Target: "1.1.1.1"},
+	}
+	handler := New(state, "test", targets).Routes()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/ping/latest", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	var body struct {
+		Samples []model.Sample `json:"samples"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if body.Samples[0].Name != "gateway" || body.Samples[0].DisplayName != "Gateway" || body.Samples[0].DisplayOrder != 10 || body.Samples[1].Name != "google_dns" || body.Samples[1].DisplayName != "Google DNS" || body.Samples[2].Name != "cloudflare_dns" {
+		t.Fatalf("samples = %+v, want config display order", body.Samples)
+	}
+}
+
 func TestServicesLatest(t *testing.T) {
 	handler := newTestHandler()
 
@@ -108,10 +144,10 @@ func TestServicesLatest(t *testing.T) {
 	if len(body.Services) != 2 {
 		t.Fatalf("len(services) = %d, want 2", len(body.Services))
 	}
-	if body.Services[0].Group != "steam" || body.Services[0].Status != "warning" {
+	if body.Services[0].Group != "steam" || body.Services[0].DisplayName != "Steam" || body.Services[0].Status != "warning" {
 		t.Fatalf("services[0] = %+v, want steam warning", body.Services[0])
 	}
-	if body.Services[1].Group != "youtube" || body.Services[1].Status != "ok" {
+	if body.Services[1].Group != "youtube" || body.Services[1].DisplayName != "Youtube" || body.Services[1].Status != "ok" {
 		t.Fatalf("services[1] = %+v, want youtube ok", body.Services[1])
 	}
 }
@@ -300,14 +336,14 @@ func TestChartsCatalog(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("Unmarshal() error = %v", err)
 	}
-	if len(body.Ping) != 1 || len(body.DNS) != 1 || len(body.HTTP) != 2 || len(body.Download) != 2 || len(body.ServiceGroups) != 2 {
+	if len(body.Ping) != 3 || len(body.DNS) != 1 || len(body.HTTP) != 2 || len(body.Download) != 2 || len(body.ServiceGroups) != 2 {
 		t.Fatalf("catalog counts = ping:%d dns:%d http:%d download:%d groups:%d", len(body.Ping), len(body.DNS), len(body.HTTP), len(body.Download), len(body.ServiceGroups))
 	}
-	if body.Ping[0].Label != "Cloudflare DNS" {
-		t.Fatalf("Label = %q, want Cloudflare DNS", body.Ping[0].Label)
+	if body.Ping[0].Name != "gateway" || body.Ping[0].DisplayName != "Gateway" || body.Ping[1].Name != "google_dns" || body.Ping[1].DisplayName != "Google DNS" || body.Ping[2].Name != "cloudflare_dns" {
+		t.Fatalf("ping catalog = %+v, want display order", body.Ping)
 	}
-	if body.Download[0].Name != "r2_10mb" || body.Download[0].ExpectedBytes == nil || *body.Download[0].ExpectedBytes != 10485760 {
-		t.Fatalf("download catalog = %+v, want r2_10mb expected bytes", body.Download)
+	if body.Download[0].Name != "r2_1mb" || body.Download[0].DisplayName != "R2 1MB" || body.Download[0].DisplayOrder != 10 || body.Download[1].Name != "r2_10mb" || body.Download[1].DisplayName != "R2 10MB" || body.Download[1].DisplayOrder != 20 {
+		t.Fatalf("download catalog = %+v, want r2_1mb then r2_10mb", body.Download)
 	}
 }
 
@@ -331,6 +367,9 @@ func TestChartsOverview(t *testing.T) {
 	}
 	if len(body.Ping) != 1 || len(body.HTTP) != 2 || len(body.Download) != 1 || len(body.ServiceGroups) != 2 {
 		t.Fatalf("overview counts = ping:%d http:%d download:%d groups:%d", len(body.Ping), len(body.HTTP), len(body.Download), len(body.ServiceGroups))
+	}
+	if body.HTTP[0].Name != "youtube_home" || body.HTTP[0].DisplayName != "YouTube Home" || body.HTTP[0].DisplayOrder != 10 || body.HTTP[1].Name != "steam_store" || body.HTTP[1].DisplayName != "Steam Store" || body.HTTP[1].DisplayOrder != 90 {
+		t.Fatalf("overview HTTP = %+v, want display order", body.HTTP)
 	}
 }
 
@@ -412,7 +451,7 @@ func TestServicesSummary(t *testing.T) {
 		t.Fatalf("len(groups) = %d, want 2", len(body.Groups))
 	}
 	youtube := body.Groups[1]
-	if youtube.Group != "youtube" || youtube.SampleCount != 2 || youtube.OKCount != 2 || youtube.OKRate != 100 || youtube.AvgTotalMs != 600 || youtube.MaxTotalMs != 800 {
+	if youtube.Group != "youtube" || youtube.DisplayName != "Youtube" || youtube.SampleCount != 2 || youtube.OKCount != 2 || youtube.OKRate != 100 || youtube.AvgTotalMs != 600 || youtube.MaxTotalMs != 800 {
 		t.Fatalf("youtube summary = %+v, want count 2 ok 100 avg 600 max 800", youtube)
 	}
 	steam := body.Groups[0]
@@ -528,25 +567,27 @@ func newTestHandler() http.Handler {
 	old := time.Now().Add(-2 * time.Hour)
 	now := time.Now()
 	state.Load([]model.Sample{
-		{Timestamp: now, Type: "ping", Name: "cloudflare_dns", Target: "1.1.1.1", OK: &ok, LossPercent: floatPtr(0), RTTAvgMs: floatPtr(10)},
+		{Timestamp: now, Type: "ping", Name: "cloudflare_dns", DisplayOrder: 30, Target: "1.1.1.1", OK: &ok, LossPercent: floatPtr(0), RTTAvgMs: floatPtr(10)},
 		{Timestamp: now, Type: "dns", Name: "lookup", Hostname: "www.google.com", OK: &ok, DurationMs: floatPtr(12.3)},
 		{Timestamp: now, Type: "http", Name: "home", URL: "https://example.com/", Method: "GET", OK: &ok, HTTPStatus: &status, TotalMs: floatPtr(45.6)},
-		{Timestamp: old, Type: "http", Group: "youtube", Category: "service", Name: "youtube_home", URL: "https://www.youtube.com/", Method: "GET", OK: &ok, HTTPStatus: &status, TotalMs: floatPtr(400), DNSMs: floatPtr(10), ConnectMs: floatPtr(20), TLSMs: floatPtr(30), TTFBMs: floatPtr(40)},
-		{Timestamp: now, Type: "http", Group: "youtube", Category: "service", Name: "youtube_home", URL: "https://www.youtube.com/", Method: "GET", OK: &ok, HTTPStatus: &status, TotalMs: floatPtr(800), DNSMs: floatPtr(20), ConnectMs: floatPtr(30), TLSMs: floatPtr(40), TTFBMs: floatPtr(50)},
-		{Timestamp: now, Type: "http", Group: "steam", Category: "service", Name: "steam_store", URL: "https://store.steampowered.com/", Method: "GET", OK: &failed, TotalMs: floatPtr(0), Error: "timeout"},
-		{Timestamp: now, Type: "http", Group: "pcgame", Category: "game", Name: "sf6_buckler_info", URL: "https://www.streetfighter.com/6/buckler/en/information/all/1", Method: "GET", OK: &failed, HTTPStatus: intPtr(http.StatusForbidden), TotalMs: floatPtr(0)},
-		{Timestamp: now, Type: "download", Name: "r2_1mb", URL: "https://pub-66e2ade26de745138962434a04cb1a46.r2.dev/netwatch-1mb.bin", OK: &ok, ExpectedBytes: &expectedBytes, DownloadedBytes: &downloadedBytes, DurationMs: floatPtr(1000), BytesPerSec: floatPtr(1048576), Mbps: floatPtr(8.388608)},
+		{Timestamp: old, Type: "http", Group: "youtube", Category: "service", Name: "youtube_home", DisplayOrder: 10, URL: "https://www.youtube.com/", Method: "GET", OK: &ok, HTTPStatus: &status, TotalMs: floatPtr(400), DNSMs: floatPtr(10), ConnectMs: floatPtr(20), TLSMs: floatPtr(30), TTFBMs: floatPtr(40)},
+		{Timestamp: now, Type: "http", Group: "youtube", Category: "service", Name: "youtube_home", DisplayOrder: 10, URL: "https://www.youtube.com/", Method: "GET", OK: &ok, HTTPStatus: &status, TotalMs: floatPtr(800), DNSMs: floatPtr(20), ConnectMs: floatPtr(30), TLSMs: floatPtr(40), TTFBMs: floatPtr(50)},
+		{Timestamp: now, Type: "http", Group: "steam", Category: "service", Name: "steam_store", DisplayOrder: 90, URL: "https://store.steampowered.com/", Method: "GET", OK: &failed, TotalMs: floatPtr(0), Error: "timeout"},
+		{Timestamp: now, Type: "http", Group: "pcgame", Category: "game", Name: "sf6_buckler_info", DisplayOrder: 110, URL: "https://www.streetfighter.com/6/buckler/en/information/all/1", Method: "GET", OK: &failed, HTTPStatus: intPtr(http.StatusForbidden), TotalMs: floatPtr(0)},
+		{Timestamp: now, Type: "download", Name: "r2_1mb", DisplayOrder: 10, URL: "https://pub-66e2ade26de745138962434a04cb1a46.r2.dev/netwatch-1mb.bin", OK: &ok, ExpectedBytes: &expectedBytes, DownloadedBytes: &downloadedBytes, DurationMs: floatPtr(1000), BytesPerSec: floatPtr(1048576), Mbps: floatPtr(8.388608)},
 	})
 	targets := []config.TargetConfig{
-		{Name: "cloudflare_dns", Type: "ping", Target: "1.1.1.1"},
-		{Name: "lookup", Type: "dns", Hostname: "www.google.com"},
-		{Name: "youtube_home", Type: "http", Group: "youtube", Category: "service", URL: "https://www.youtube.com/"},
-		{Name: "steam_store", Type: "http", Group: "steam", Category: "service", URL: "https://store.steampowered.com/"},
-		{Name: "sf6_buckler_info", Type: "http", Group: "pcgame", Category: "game", URL: "https://www.streetfighter.com/6/buckler/en/information/all/1"},
+		{Name: "gateway", Label: "Gateway", DisplayOrder: 10, Type: "ping", Target: "192.168.1.1"},
+		{Name: "google_dns", Label: "Google DNS", DisplayOrder: 20, Type: "ping", Target: "8.8.8.8"},
+		{Name: "cloudflare_dns", Label: "Cloudflare DNS", DisplayOrder: 30, Type: "ping", Target: "1.1.1.1"},
+		{Name: "lookup", Label: "Lookup", Type: "dns", Hostname: "www.google.com"},
+		{Name: "youtube_home", Label: "YouTube Home", DisplayOrder: 10, Type: "http", Group: "youtube", Category: "service", URL: "https://www.youtube.com/"},
+		{Name: "steam_store", Label: "Steam Store", DisplayOrder: 90, Type: "http", Group: "steam", Category: "service", URL: "https://store.steampowered.com/"},
+		{Name: "sf6_buckler_info", Label: "SF6 Buckler Info", DisplayOrder: 110, Type: "http", Group: "pcgame", Category: "game", URL: "https://www.streetfighter.com/6/buckler/en/information/all/1"},
 	}
 	downloadProbes := []config.DownloadProbeConfig{
-		{Name: "r2_1mb", URL: "https://pub-66e2ade26de745138962434a04cb1a46.r2.dev/netwatch-1mb.bin", ExpectedBytes: 1048576, IntervalSeconds: 600, TimeoutSeconds: 20, Enabled: true},
-		{Name: "r2_10mb", URL: "https://pub-66e2ade26de745138962434a04cb1a46.r2.dev/netwatch-10mb.bin", ExpectedBytes: 10485760, IntervalSeconds: 3600, TimeoutSeconds: 60, Enabled: true},
+		{Name: "r2_1mb", Label: "R2 1MB", DisplayOrder: 10, URL: "https://pub-66e2ade26de745138962434a04cb1a46.r2.dev/netwatch-1mb.bin", ExpectedBytes: 1048576, IntervalSeconds: 600, TimeoutSeconds: 20, Enabled: true},
+		{Name: "r2_10mb", Label: "R2 10MB", DisplayOrder: 20, URL: "https://pub-66e2ade26de745138962434a04cb1a46.r2.dev/netwatch-10mb.bin", ExpectedBytes: 10485760, IntervalSeconds: 3600, TimeoutSeconds: 60, Enabled: true},
 	}
 	return New(state, "test", targets).WithDownloadProbes(downloadProbes).Routes()
 }

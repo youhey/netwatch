@@ -138,12 +138,14 @@ func (c *Collector) measure(ctx context.Context, target config.TargetConfig) mod
 
 func (c *Collector) measurePing(ctx context.Context, target config.TargetConfig) model.Sample {
 	sample := model.Sample{
-		Timestamp: time.Now().Local(),
-		Type:      target.Type,
-		Name:      target.Name,
-		Group:     target.Group,
-		Category:  target.Category,
-		Target:    target.Target,
+		Timestamp:    time.Now().Local(),
+		Type:         target.Type,
+		Name:         target.Name,
+		Group:        target.Group,
+		Category:     target.Category,
+		DisplayName:  target.Label,
+		DisplayOrder: target.DisplayOrder,
+		Target:       target.Target,
 	}
 
 	timeout := time.Duration(c.cfg.TimeoutSeconds(target)) * time.Second
@@ -174,12 +176,14 @@ func (c *Collector) measurePing(ctx context.Context, target config.TargetConfig)
 
 func (c *Collector) measureDNS(ctx context.Context, target config.TargetConfig) model.Sample {
 	sample := model.Sample{
-		Timestamp: time.Now().Local(),
-		Type:      target.Type,
-		Name:      target.Name,
-		Group:     target.Group,
-		Category:  target.Category,
-		Hostname:  target.Hostname,
+		Timestamp:    time.Now().Local(),
+		Type:         target.Type,
+		Name:         target.Name,
+		Group:        target.Group,
+		Category:     target.Category,
+		DisplayName:  target.Label,
+		DisplayOrder: target.DisplayOrder,
+		Hostname:     target.Hostname,
 	}
 
 	timeout := time.Duration(c.cfg.TimeoutSeconds(target)) * time.Second
@@ -205,13 +209,15 @@ func (c *Collector) measureHTTP(ctx context.Context, target config.TargetConfig)
 	}
 
 	sample := model.Sample{
-		Timestamp: time.Now().Local(),
-		Type:      target.Type,
-		Name:      target.Name,
-		Group:     target.Group,
-		Category:  target.Category,
-		URL:       target.URL,
-		Method:    method,
+		Timestamp:    time.Now().Local(),
+		Type:         target.Type,
+		Name:         target.Name,
+		Group:        target.Group,
+		Category:     target.Category,
+		DisplayName:  target.Label,
+		DisplayOrder: target.DisplayOrder,
+		URL:          target.URL,
+		Method:       method,
 	}
 
 	timeout := time.Duration(c.cfg.TimeoutSeconds(target)) * time.Second
@@ -243,6 +249,8 @@ func (c *Collector) measureDownload(ctx context.Context, downloadProbe config.Do
 		Timestamp:     time.Now().Local(),
 		Type:          "download",
 		Name:          downloadProbe.Name,
+		DisplayName:   downloadProbe.Label,
+		DisplayOrder:  downloadProbe.DisplayOrder,
 		URL:           downloadProbe.URL,
 		ExpectedBytes: positiveInt64Ptr(downloadProbe.ExpectedBytes),
 	}

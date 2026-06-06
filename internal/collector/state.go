@@ -1,6 +1,7 @@
 package collector
 
 import (
+	"math"
 	"sort"
 	"sync"
 	"time"
@@ -138,9 +139,21 @@ func (s *State) ServiceSeries(group, name string, since time.Time) []model.Sampl
 
 func sortSamples(samples []model.Sample) {
 	sort.SliceStable(samples, func(i, j int) bool {
+		leftOrder := displayOrderRank(samples[i].DisplayOrder)
+		rightOrder := displayOrderRank(samples[j].DisplayOrder)
+		if leftOrder != rightOrder {
+			return leftOrder < rightOrder
+		}
 		if samples[i].Name == samples[j].Name {
 			return samples[i].Timestamp.Before(samples[j].Timestamp)
 		}
 		return samples[i].Name < samples[j].Name
 	})
+}
+
+func displayOrderRank(value int) int {
+	if value > 0 {
+		return value
+	}
+	return math.MaxInt
 }

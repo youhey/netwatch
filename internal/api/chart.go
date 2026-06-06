@@ -48,15 +48,17 @@ type chartResponse struct {
 	BucketSeconds    int       `json:"bucket_seconds"`
 	MaxPoints        int       `json:"max_points"`
 
-	Type     string       `json:"type"`
-	Name     string       `json:"name,omitempty"`
-	Target   string       `json:"target,omitempty"`
-	Hostname string       `json:"hostname,omitempty"`
-	Group    string       `json:"group,omitempty"`
-	Category string       `json:"category,omitempty"`
-	URL      string       `json:"url,omitempty"`
-	Targets  []string     `json:"targets,omitempty"`
-	Points   []chartPoint `json:"points"`
+	Type         string       `json:"type"`
+	Name         string       `json:"name,omitempty"`
+	DisplayName  string       `json:"display_name,omitempty"`
+	Target       string       `json:"target,omitempty"`
+	Hostname     string       `json:"hostname,omitempty"`
+	Group        string       `json:"group,omitempty"`
+	Category     string       `json:"category,omitempty"`
+	DisplayOrder int          `json:"display_order,omitempty"`
+	URL          string       `json:"url,omitempty"`
+	Targets      []string     `json:"targets,omitempty"`
+	Points       []chartPoint `json:"points"`
 }
 
 func parseBucket(value string) (time.Duration, error) {
@@ -113,20 +115,28 @@ func buildChartResponse(sampleType, rangeValue, bucketValue string, bucket time.
 	switch sampleType {
 	case "ping":
 		response.Name = samples[0].Name
+		response.DisplayName = samples[0].DisplayName
+		response.DisplayOrder = samples[0].DisplayOrder
 		response.Target = samples[0].Target
 		response.Points = aggregatePing(samples, bucket)
 	case "dns":
 		response.Name = samples[0].Name
+		response.DisplayName = samples[0].DisplayName
+		response.DisplayOrder = samples[0].DisplayOrder
 		response.Hostname = samples[0].Hostname
 		response.Points = aggregateDNS(samples, bucket)
 	case "http":
 		response.Name = samples[0].Name
+		response.DisplayName = samples[0].DisplayName
 		response.Group = samples[0].Group
 		response.Category = samples[0].Category
+		response.DisplayOrder = samples[0].DisplayOrder
 		response.URL = samples[0].URL
 		response.Points = aggregateHTTP(samples, bucket)
 	case "download":
 		response.Name = samples[0].Name
+		response.DisplayName = samples[0].DisplayName
+		response.DisplayOrder = samples[0].DisplayOrder
 		response.URL = samples[0].URL
 		response.Points = aggregateDownload(samples, bucket)
 	}
@@ -153,7 +163,9 @@ func buildServiceChartResponse(group, rangeValue, bucketValue string, bucket tim
 	if response.Group == "" {
 		response.Group = samples[0].Group
 	}
+	response.DisplayName = labelForName(response.Group)
 	response.Category = samples[0].Category
+	response.DisplayOrder = minSampleDisplayOrder(samples)
 	response.Targets = serviceTargets(samples)
 	response.Points = thinPoints(aggregateServices(samples, bucket), maxPoints)
 	return response
@@ -424,13 +436,37 @@ func thinPoints(points []chartPoint, maxPoints int) []chartPoint {
 
 func serviceTargets(samples []model.Sample) []string {
 	seen := make(map[string]struct{})
+	orders := make(map[string]int)
 	for _, sample := range samples {
 		seen[sample.Name] = struct{}{}
+		if shouldReplaceDisplayOrder(orders[sample.Name], sample.DisplayOrder) {
+			orders[sample.Name] = sample.DisplayOrder
+		}
 	}
 	targets := make([]string, 0, len(seen))
 	for target := range seen {
 		targets = append(targets, target)
 	}
-	sort.Strings(targets)
+	sort.SliceStable(targets, func(i, j int) bool {
+		leftOrder := displayOrderRank(orders[targets[i]])
+		rightOrder := displayOrderRank(orders[targets[j]])
+		if leftOrder != rightOrder {
+			return leftOrder < rightOrder
+		}
+		return targets[i] < targets[j]
+	})
 	return targets
+}
+
+func minSampleDisplayOrder(samples []model.Sample) int {
+	minOrder := 0
+	for _, sample := range samples {
+		if sample.DisplayOrder <= 0 {
+			continue
+		}
+		if minOrder == 0 || sample.DisplayOrder < minOrder {
+			minOrder = sample.DisplayOrder
+		}
+	}
+	return minOrder
 }

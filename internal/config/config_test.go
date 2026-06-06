@@ -111,6 +111,8 @@ func TestLoadDownloadProbes(t *testing.T) {
   "download_probes": [
     {
       "name": "r2_1mb",
+      "label": "R2 1MB",
+      "display_order": 10,
       "url": "https://pub-66e2ade26de745138962434a04cb1a46.r2.dev/netwatch-1mb.bin",
       "expected_bytes": 1048576,
       "interval_seconds": 600,
@@ -125,6 +127,8 @@ func TestLoadDownloadProbes(t *testing.T) {
   "targets": [
     {
       "name": "home",
+      "label": "Home",
+      "display_order": 70,
       "type": "http",
       "url": "https://example.com/"
     }
@@ -146,8 +150,11 @@ func TestLoadDownloadProbes(t *testing.T) {
 		t.Fatalf("len(EnabledDownloadProbes) = %d, want 1", len(probes))
 	}
 	probe := probes[0]
-	if probe.Name != "r2_1mb" || probe.ExpectedBytes != 1048576 || probe.IntervalSeconds != 600 || probe.TimeoutSeconds != 20 {
+	if probe.Name != "r2_1mb" || probe.Label != "R2 1MB" || probe.DisplayOrder != 10 || probe.ExpectedBytes != 1048576 || probe.IntervalSeconds != 600 || probe.TimeoutSeconds != 20 {
 		t.Fatalf("probe = %+v, want download settings loaded", probe)
+	}
+	if cfg.Targets[0].Label != "Home" || cfg.Targets[0].DisplayOrder != 70 {
+		t.Fatalf("target = %+v, want label and display_order", cfg.Targets[0])
 	}
 }
 
@@ -247,9 +254,17 @@ func TestLoadExampleConfig(t *testing.T) {
 	}
 	found := false
 	foundSF6 := false
+	foundGatewayOrder := false
+	foundGoogleOrder := false
 	for _, target := range cfg.Targets {
-		if target.Name == "youtube_home" && target.Group == "youtube" && target.IntervalSeconds == 300 {
+		if target.Name == "youtube_home" && target.Label == "YouTube Home" && target.Group == "youtube" && target.IntervalSeconds == 300 && target.DisplayOrder == 10 {
 			found = true
+		}
+		if target.Name == "gateway" && target.Label == "Gateway" && target.DisplayOrder == 10 {
+			foundGatewayOrder = true
+		}
+		if target.Name == "google_dns" && target.Label == "Google DNS" && target.DisplayOrder == 20 {
+			foundGoogleOrder = true
 		}
 		if target.Name == "sf6_buckler_info" {
 			foundSF6 = true
@@ -260,5 +275,12 @@ func TestLoadExampleConfig(t *testing.T) {
 	}
 	if foundSF6 {
 		t.Fatal("sf6_buckler_info should not be in example config")
+	}
+	if !foundGatewayOrder || !foundGoogleOrder {
+		t.Fatal("example config display_order for ping targets not found")
+	}
+	probes := cfg.EnabledDownloadProbes()
+	if probes[0].Name != "r2_1mb" || probes[0].Label != "R2 1MB" || probes[0].DisplayOrder != 10 || probes[1].Name != "r2_10mb" || probes[1].Label != "R2 10MB" || probes[1].DisplayOrder != 20 {
+		t.Fatalf("download probe order = %+v, want r2_1mb then r2_10mb", probes)
 	}
 }

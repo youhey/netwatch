@@ -40,6 +40,7 @@ type TargetConfig struct {
 	Method          string `json:"method"`
 	IntervalSeconds int    `json:"interval_seconds"`
 	TimeoutSeconds  int    `json:"timeout_seconds"`
+	DisplayOrder    int    `json:"display_order"`
 }
 
 type DownloadProbeConfig struct {
@@ -50,6 +51,7 @@ type DownloadProbeConfig struct {
 	IntervalSeconds int    `json:"interval_seconds"`
 	TimeoutSeconds  int    `json:"timeout_seconds"`
 	Enabled         bool   `json:"enabled"`
+	DisplayOrder    int    `json:"display_order"`
 }
 
 func Load(path string) (Config, error) {
@@ -169,6 +171,9 @@ func (c Config) Validate() error {
 		if target.TimeoutSeconds < 0 {
 			return fmt.Errorf("targets[%d].timeout_seconds must be greater than or equal to 0", i)
 		}
+		if target.DisplayOrder < 0 {
+			return fmt.Errorf("targets[%d].display_order must be greater than or equal to 0", i)
+		}
 	}
 
 	for i, downloadProbe := range c.DownloadProbes {
@@ -196,6 +201,9 @@ func (c Config) Validate() error {
 		}
 		if downloadProbe.TimeoutSeconds <= 0 {
 			return fmt.Errorf("download_probes[%d].timeout_seconds must be greater than 0", i)
+		}
+		if downloadProbe.DisplayOrder < 0 {
+			return fmt.Errorf("download_probes[%d].display_order must be greater than or equal to 0", i)
 		}
 	}
 

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"math"
 	"net/http"
 	"sort"
 	"strings"
@@ -16,19 +17,23 @@ var (
 
 type catalogTarget struct {
 	Name          string `json:"name"`
+	DisplayName   string `json:"display_name"`
 	Target        string `json:"target,omitempty"`
 	Hostname      string `json:"hostname,omitempty"`
 	Group         string `json:"group,omitempty"`
 	Category      string `json:"category,omitempty"`
+	DisplayOrder  int    `json:"display_order,omitempty"`
 	URL           string `json:"url,omitempty"`
 	ExpectedBytes *int64 `json:"expected_bytes,omitempty"`
 	Label         string `json:"label"`
 }
 
 type catalogServiceGroup struct {
-	Group    string `json:"group"`
-	Category string `json:"category,omitempty"`
-	Label    string `json:"label"`
+	Group        string `json:"group"`
+	DisplayName  string `json:"display_name"`
+	Category     string `json:"category,omitempty"`
+	DisplayOrder int    `json:"display_order,omitempty"`
+	Label        string `json:"label"`
 }
 
 type chartSupportResponse struct {
@@ -68,46 +73,64 @@ func (h *Handler) chartsCatalog(w http.ResponseWriter, r *http.Request) {
 	for _, target := range h.targets {
 		switch target.Type {
 		case "ping":
+			displayName := labelForTarget(target)
 			pingTargets = append(pingTargets, catalogTarget{
-				Name:   target.Name,
-				Target: target.Target,
-				Label:  labelForTarget(target),
+				Name:         target.Name,
+				DisplayName:  displayName,
+				Target:       target.Target,
+				DisplayOrder: target.DisplayOrder,
+				Label:        displayName,
 			})
 		case "dns":
+			displayName := labelForTarget(target)
 			dnsTargets = append(dnsTargets, catalogTarget{
-				Name:     target.Name,
-				Hostname: target.Hostname,
-				Label:    labelForTarget(target),
+				Name:         target.Name,
+				DisplayName:  displayName,
+				Hostname:     target.Hostname,
+				DisplayOrder: target.DisplayOrder,
+				Label:        displayName,
 			})
 		case "http":
 			if isIgnoredTargetName(target.Name) {
 				continue
 			}
+			displayName := labelForTarget(target)
 			httpTargets = append(httpTargets, catalogTarget{
-				Name:     target.Name,
-				Group:    target.Group,
-				Category: target.Category,
-				URL:      target.URL,
-				Label:    labelForTarget(target),
+				Name:         target.Name,
+				DisplayName:  displayName,
+				Group:        target.Group,
+				Category:     target.Category,
+				DisplayOrder: target.DisplayOrder,
+				URL:          target.URL,
+				Label:        displayName,
 			})
 			if target.Group != "" {
 				if _, ok := groups[target.Group]; !ok {
 					groups[target.Group] = catalogServiceGroup{
-						Group:    target.Group,
-						Category: target.Category,
-						Label:    labelForName(target.Group),
+						Group:        target.Group,
+						DisplayName:  labelForName(target.Group),
+						Category:     target.Category,
+						DisplayOrder: target.DisplayOrder,
+						Label:        labelForName(target.Group),
 					}
+				} else if shouldReplaceDisplayOrder(groups[target.Group].DisplayOrder, target.DisplayOrder) {
+					group := groups[target.Group]
+					group.DisplayOrder = target.DisplayOrder
+					groups[target.Group] = group
 				}
 			}
 		}
 	}
 	for _, probe := range h.downloadProbes {
 		expectedBytes := probe.ExpectedBytes
+		displayName := labelForDownloadProbe(probe)
 		downloadTargets = append(downloadTargets, catalogTarget{
 			Name:          probe.Name,
+			DisplayName:   displayName,
 			URL:           probe.URL,
 			ExpectedBytes: &expectedBytes,
-			Label:         labelForDownloadProbe(probe),
+			DisplayOrder:  probe.DisplayOrder,
+			Label:         displayName,
 		})
 	}
 
@@ -120,6 +143,11 @@ func (h *Handler) chartsCatalog(w http.ResponseWriter, r *http.Request) {
 	sortCatalogTargets(httpTargets)
 	sortCatalogTargets(downloadTargets)
 	sort.SliceStable(serviceGroups, func(i, j int) bool {
+		leftOrder := displayOrderRank(serviceGroups[i].DisplayOrder)
+		rightOrder := displayOrderRank(serviceGroups[j].DisplayOrder)
+		if leftOrder != rightOrder {
+			return leftOrder < rightOrder
+		}
 		return serviceGroups[i].Group < serviceGroups[j].Group
 	})
 
@@ -175,29 +203,32 @@ func (h *Handler) chartsOverview(w http.ResponseWriter, r *http.Request) {
 		MaxPoints:        maxPoints,
 	}
 
-	for _, name := range []string{"gateway", "cloudflare_dns", "google_dns"} {
-		samples := h.state.SeriesByType("ping", name, start)
+	for _, target := range orderedTargetsByType(h.targets, "ping") {
+		samples := h.seriesByType("ping", target.Name, start)
 		if len(samples) == 0 {
 			continue
 		}
 		response.Ping = append(response.Ping, buildChartResponse("ping", rangeValue, bucketValue, bucket, maxPoints, start, end, samples))
 	}
-	for _, name := range []string{"youtube_home", "steam_store", "slack_status"} {
-		samples := h.state.SeriesByType("http", name, start)
+	for _, target := range orderedTargetsByType(h.targets, "http") {
+		if isIgnoredTargetName(target.Name) {
+			continue
+		}
+		samples := h.seriesByType("http", target.Name, start)
 		if len(samples) == 0 {
 			continue
 		}
 		response.HTTP = append(response.HTTP, buildChartResponse("http", rangeValue, bucketValue, bucket, maxPoints, start, end, samples))
 	}
-	for _, probe := range h.downloadProbes {
-		samples := h.state.SeriesByType("download", probe.Name, start)
+	for _, probe := range orderedDownloadProbes(h.downloadProbes) {
+		samples := h.seriesByType("download", probe.Name, start)
 		if len(samples) == 0 {
 			continue
 		}
 		response.Download = append(response.Download, buildChartResponse("download", rangeValue, bucketValue, bucket, maxPoints, start, end, samples))
 	}
 	for _, group := range []string{"youtube", "steam", "pcgame", "psn", "aws", "azure"} {
-		samples := filterIgnoredServiceTargets(h.state.ServiceSeries(group, "", start))
+		samples := filterIgnoredServiceTargets(h.serviceSeries(group, "", start))
 		if len(samples) == 0 {
 			continue
 		}
@@ -259,6 +290,57 @@ func labelForName(value string) string {
 
 func sortCatalogTargets(targets []catalogTarget) {
 	sort.SliceStable(targets, func(i, j int) bool {
+		leftOrder := displayOrderRank(targets[i].DisplayOrder)
+		rightOrder := displayOrderRank(targets[j].DisplayOrder)
+		if leftOrder != rightOrder {
+			return leftOrder < rightOrder
+		}
 		return targets[i].Name < targets[j].Name
 	})
+}
+
+func orderedTargetsByType(targets []config.TargetConfig, targetType string) []config.TargetConfig {
+	var filtered []config.TargetConfig
+	for _, target := range targets {
+		if target.Type != targetType {
+			continue
+		}
+		filtered = append(filtered, target)
+	}
+	sort.SliceStable(filtered, func(i, j int) bool {
+		leftOrder := displayOrderRank(filtered[i].DisplayOrder)
+		rightOrder := displayOrderRank(filtered[j].DisplayOrder)
+		if leftOrder != rightOrder {
+			return leftOrder < rightOrder
+		}
+		return filtered[i].Name < filtered[j].Name
+	})
+	return filtered
+}
+
+func orderedDownloadProbes(probes []config.DownloadProbeConfig) []config.DownloadProbeConfig {
+	ordered := append([]config.DownloadProbeConfig(nil), probes...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		leftOrder := displayOrderRank(ordered[i].DisplayOrder)
+		rightOrder := displayOrderRank(ordered[j].DisplayOrder)
+		if leftOrder != rightOrder {
+			return leftOrder < rightOrder
+		}
+		return ordered[i].Name < ordered[j].Name
+	})
+	return ordered
+}
+
+func displayOrderRank(value int) int {
+	if value > 0 {
+		return value
+	}
+	return math.MaxInt
+}
+
+func shouldReplaceDisplayOrder(current, candidate int) bool {
+	if candidate <= 0 {
+		return false
+	}
+	return current <= 0 || candidate < current
 }

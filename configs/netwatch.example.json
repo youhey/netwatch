@@ -15,6 +15,8 @@
   "download_probes": [
     {
       "name": "r2_1mb",
+      "label": "R2 1MB",
+      "display_order": 10,
       "url": "https://pub-66e2ade26de745138962434a04cb1a46.r2.dev/netwatch-1mb.bin",
       "expected_bytes": 1048576,
       "interval_seconds": 600,
@@ -23,6 +25,8 @@
     },
     {
       "name": "r2_10mb",
+      "label": "R2 10MB",
+      "display_order": 20,
       "url": "https://pub-66e2ade26de745138962434a04cb1a46.r2.dev/netwatch-10mb.bin",
       "expected_bytes": 10485760,
       "interval_seconds": 3600,
@@ -33,26 +37,35 @@
   "targets": [
     {
       "name": "gateway",
+      "label": "Gateway",
+      "display_order": 10,
       "type": "ping",
       "target": "192.168.1.1"
     },
     {
       "name": "cloudflare_dns",
+      "label": "Cloudflare DNS",
+      "display_order": 30,
       "type": "ping",
       "target": "1.1.1.1"
     },
     {
       "name": "google_dns",
+      "label": "Google DNS",
+      "display_order": 20,
       "type": "ping",
       "target": "8.8.8.8"
     },
     {
       "name": "google_dns_lookup",
+      "label": "Google DNS Lookup",
       "type": "dns",
       "hostname": "www.google.com"
     },
     {
       "name": "cloudflare_home",
+      "label": "Cloudflare Home",
+      "display_order": 70,
       "type": "http",
       "group": "baseline",
       "category": "baseline",
@@ -60,6 +73,8 @@
     },
     {
       "name": "google_generate_204",
+      "label": "Google Generate 204",
+      "display_order": 20,
       "type": "http",
       "group": "baseline",
       "category": "baseline",
@@ -67,6 +82,8 @@
     },
     {
       "name": "youtube_home",
+      "label": "YouTube Home",
+      "display_order": 10,
       "type": "http",
       "group": "youtube",
       "category": "service",
@@ -75,6 +92,8 @@
     },
     {
       "name": "netflix_status",
+      "label": "Netflix Status",
+      "display_order": 30,
       "type": "http",
       "group": "netflix",
       "category": "service",
@@ -83,6 +102,8 @@
     },
     {
       "name": "slack_status",
+      "label": "Slack Status",
+      "display_order": 40,
       "type": "http",
       "group": "slack",
       "category": "service",
@@ -91,6 +112,8 @@
     },
     {
       "name": "steam_store",
+      "label": "Steam Store",
+      "display_order": 90,
       "type": "http",
       "group": "steam",
       "category": "service",
@@ -99,6 +122,8 @@
     },
     {
       "name": "psn_status",
+      "label": "PSN Status",
+      "display_order": 80,
       "type": "http",
       "group": "psn",
       "category": "game",
@@ -107,6 +132,8 @@
     },
     {
       "name": "aws_health",
+      "label": "AWS Health",
+      "display_order": 50,
       "type": "http",
       "group": "aws",
       "category": "cloud",
@@ -115,6 +142,8 @@
     },
     {
       "name": "azure_status",
+      "label": "Azure Status",
+      "display_order": 60,
       "type": "http",
       "group": "azure",
       "category": "cloud",
@@ -123,6 +152,8 @@
     },
     {
       "name": "riot_status",
+      "label": "Riot Status",
+      "display_order": 110,
       "type": "http",
       "group": "pcgame",
       "category": "game",
@@ -131,6 +162,8 @@
     },
     {
       "name": "ea_status",
+      "label": "EA Status",
+      "display_order": 100,
       "type": "http",
       "group": "pcgame",
       "category": "game",
