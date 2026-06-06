@@ -320,8 +320,76 @@ curl 'http://127.0.0.1:8080/api/services/series?group=pcgame&range=24h'
 curl 'http://127.0.0.1:8080/api/services/series?name=youtube_home&range=24h'
 ```
 
-`range` は `1h`、`6h`、`24h`、`7d` に対応しています。
+`range` は `1h`、`6h`、`24h`、`7d`、`14d` に対応しています。
 `/api/services/series` では `group` と `name` を同時指定すると `400 Bad Request` を返します。
+
+## Chart-ready API
+
+Phase 4 では、Mac アプリ `NetwatchViewer` の Swift Charts 表示向けに、既存 series API へ `bucket` と `max_points` を追加しています。
+
+`bucket` 未指定時は従来通り raw samples を返します。`bucket` を指定した場合だけ、`points` 配列中心の chart-ready response を返します。
+
+対応 bucket:
+
+```text
+1m, 5m, 15m, 30m, 1h, 6h, 1d
+```
+
+`max_points` は chart points の最大数です。未指定時は `500`、指定可能範囲は `10` から `2000` です。範囲外や不正値は `400 Bad Request` を返します。
+不正な `range` / `bucket` も `400 Bad Request` です。存在しない `name` / `group` は `404` ではなく、空の `points` を返します。
+
+Ping chart:
+
+```bash
+curl 'http://127.0.0.1:8080/api/ping/series?name=cloudflare_dns&range=24h&bucket=5m&max_points=300'
+```
+
+```json
+{
+  "type": "ping",
+  "name": "cloudflare_dns",
+  "target": "1.1.1.1",
+  "range": "24h",
+  "bucket": "5m",
+  "points": [
+    {
+      "ts": "2026-06-06T00:00:00+09:00",
+      "avg_ms": 12.3,
+      "min_ms": 10.8,
+      "max_ms": 20.1,
+      "loss_percent": 0.0,
+      "sample_count": 10
+    }
+  ]
+}
+```
+
+DNS chart:
+
+```bash
+curl 'http://127.0.0.1:8080/api/dns/series?name=google_dns_lookup&range=24h&bucket=5m'
+```
+
+HTTP chart:
+
+```bash
+curl 'http://127.0.0.1:8080/api/http/series?name=youtube_home&range=24h&bucket=5m'
+```
+
+Services chart:
+
+```bash
+curl 'http://127.0.0.1:8080/api/services/series?group=pcgame&range=24h&bucket=5m'
+```
+
+Chart 集約仕様:
+
+- Ping: `rtt_avg_ms` の平均、`rtt_min_ms` の最小、`rtt_max_ms` の最大、`sent` / `received` から再計算した `loss_percent`
+- DNS: 成功 sample の `duration_ms` 平均/最小/最大、失敗 sample は `failure_count`
+- HTTP: 成功 sample の `total_ms` / `ttfb_ms` 平均、`total_ms` 最大、失敗 sample は `failure_count` / `timeout_count`
+- Services: group 内 HTTP sample の成功 `total_ms` 平均/最大、`ok_rate`、`failure_count`
+- `ok=false` の DNS/HTTP sample は平均計算から除外し、失敗数には含めます
+- bucket 内に成功 sample がない場合、平均値は JSON 上で省略され、`0ms` と欠損を区別します
 
 実サービス group の summary:
 
@@ -409,6 +477,9 @@ curl http://netpi:8080/api/latest
 curl http://netpi:8080/api/services/latest
 curl "http://netpi:8080/api/services/summary?range=1h"
 curl http://netpi:8080/api/monitoring/status
+curl "http://netpi:8080/api/ping/series?name=cloudflare_dns&range=24h&bucket=5m"
+curl "http://netpi:8080/api/http/series?name=youtube_home&range=24h&bucket=5m"
+curl "http://netpi:8080/api/services/series?group=pcgame&range=24h&bucket=5m"
 curl -o /dev/null -s -w "dns=%{time_namelookup} connect=%{time_connect} tls=%{time_appconnect} ttfb=%{time_starttransfer} total=%{time_total} code=%{http_code}\n" https://www.cloudflare.com/
 curl -o /dev/null -s -w "dns=%{time_namelookup} connect=%{time_connect} tls=%{time_appconnect} ttfb=%{time_starttransfer} total=%{time_total} code=%{http_code}\n" https://www.youtube.com/
 curl -o /dev/null -s -w "dns=%{time_namelookup} connect=%{time_connect} tls=%{time_appconnect} ttfb=%{time_starttransfer} total=%{time_total} code=%{http_code}\n" https://store.steampowered.com/

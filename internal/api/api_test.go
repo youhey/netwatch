@@ -17,6 +17,7 @@ func TestParseRange(t *testing.T) {
 		"6h":  6,
 		"24h": 24,
 		"7d":  24 * 7,
+		"14d": 24 * 14,
 	}
 
 	for value, wantHours := range tests {
@@ -112,6 +113,90 @@ func TestServicesSeriesByGroup(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 
 	assertSampleCount(t, rec, 2)
+}
+
+func TestPingSeriesWithBucketReturnsChart(t *testing.T) {
+	handler := newTestHandler()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/ping/series?name=cloudflare_dns&range=24h&bucket=5m&max_points=10", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	var body chartResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if body.Type != "ping" || body.Name != "cloudflare_dns" || body.Bucket != "5m" || len(body.Points) != 1 {
+		t.Fatalf("body = %+v, want ping chart response", body)
+	}
+}
+
+func TestHTTPSeriesWithBucketReturnsChart(t *testing.T) {
+	handler := newTestHandler()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/http/series?name=youtube_home&range=24h&bucket=5m", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	var body chartResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if body.Type != "http" || body.Name != "youtube_home" || len(body.Points) == 0 {
+		t.Fatalf("body = %+v, want http chart response", body)
+	}
+}
+
+func TestServicesSeriesWithBucketReturnsChart(t *testing.T) {
+	handler := newTestHandler()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/services/series?group=youtube&range=24h&bucket=5m", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	var body chartResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if body.Type != "service_group" || body.Group != "youtube" || len(body.Targets) != 1 || len(body.Points) == 0 {
+		t.Fatalf("body = %+v, want service chart response", body)
+	}
+}
+
+func TestSeriesWithInvalidBucketReturnsBadRequest(t *testing.T) {
+	handler := newTestHandler()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/ping/series?name=cloudflare_dns&range=24h&bucket=2m", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestSeriesWithInvalidMaxPointsReturnsBadRequest(t *testing.T) {
+	handler := newTestHandler()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/ping/series?name=cloudflare_dns&range=24h&bucket=5m&max_points=3", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
 }
 
 func TestServicesSeriesRejectsGroupAndName(t *testing.T) {

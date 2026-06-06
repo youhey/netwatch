@@ -114,6 +114,22 @@ func (h *Handler) servicesSeries(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	bucketValue := r.URL.Query().Get("bucket")
+	if bucketValue != "" {
+		bucket, err := parseBucket(bucketValue)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		maxPoints, err := parseMaxPoints(r.URL.Query().Get("max_points"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		samples := filterIgnoredServiceTargets(h.state.ServiceSeries(group, name, time.Now().Add(-duration)))
+		writeJSON(w, http.StatusOK, buildServiceChartResponse(group, rangeValue, bucketValue, bucket, maxPoints, samples))
+		return
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"group":   group,
@@ -157,6 +173,22 @@ func (h *Handler) series(w http.ResponseWriter, r *http.Request, sampleType stri
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	bucketValue := r.URL.Query().Get("bucket")
+	if bucketValue != "" {
+		bucket, err := parseBucket(bucketValue)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		maxPoints, err := parseMaxPoints(r.URL.Query().Get("max_points"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		samples := h.state.SeriesByType(sampleType, name, time.Now().Add(-duration))
+		writeJSON(w, http.StatusOK, buildChartResponse(sampleType, rangeValue, bucketValue, bucket, maxPoints, samples))
+		return
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"name":    name,
@@ -179,6 +211,8 @@ func parseRange(value string) (time.Duration, error) {
 		return 24 * time.Hour, nil
 	case "7d":
 		return 7 * 24 * time.Hour, nil
+	case "14d":
+		return 14 * 24 * time.Hour, nil
 	default:
 		return 0, fmt.Errorf("unsupported range: %s", value)
 	}
