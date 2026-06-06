@@ -12,6 +12,54 @@
   "http_timeout_seconds": 10,
   "http_disable_keepalive": true,
   "http_max_body_bytes": 262144,
+  "monitoring_thresholds": {
+    "ping": {
+      "gateway_rtt_avg_ms": {
+        "warning": 5,
+        "critical": 20
+      },
+      "gateway_loss_percent": {
+        "warning": 0.1,
+        "critical": 1
+      },
+      "external_rtt_avg_ms": {
+        "warning": 100,
+        "critical": 200
+      },
+      "external_loss_percent": {
+        "warning": 1,
+        "critical": 5
+      }
+    },
+    "dns": {
+      "duration_ms": {
+        "warning": 300,
+        "critical": 1000
+      }
+    },
+    "http": {
+      "total_ms": {
+        "warning": 3000,
+        "critical": 5000
+      }
+    },
+    "download": {
+      "r2_1mb_mbps": {
+        "warning": 5,
+        "critical": 1
+      },
+      "r2_10mb_mbps": {
+        "warning": 10,
+        "critical": 3
+      }
+    },
+    "service": {
+      "ok_rate_percent": {
+        "warning": 95,
+        "critical": 90
+      }
+    }
+  },
   "download_probes": [
     {
       "name": "r2_1mb",

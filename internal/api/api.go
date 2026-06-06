@@ -20,6 +20,7 @@ type Handler struct {
 	version        string
 	targets        []config.TargetConfig
 	downloadProbes []config.DownloadProbeConfig
+	thresholds     config.MonitoringThresholds
 }
 
 func New(state *collector.State, version string, targets ...[]config.TargetConfig) *Handler {
@@ -28,14 +29,20 @@ func New(state *collector.State, version string, targets ...[]config.TargetConfi
 		configuredTargets = targets[0]
 	}
 	return &Handler{
-		state:   state,
-		version: version,
-		targets: configuredTargets,
+		state:      state,
+		version:    version,
+		targets:    configuredTargets,
+		thresholds: config.DefaultMonitoringThresholds(),
 	}
 }
 
 func (h *Handler) WithDownloadProbes(downloadProbes []config.DownloadProbeConfig) *Handler {
 	h.downloadProbes = downloadProbes
+	return h
+}
+
+func (h *Handler) WithMonitoringThresholds(thresholds config.MonitoringThresholds) *Handler {
+	h.thresholds = thresholds
 	return h
 }
 
@@ -145,7 +152,7 @@ func (h *Handler) downloadSeries(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) servicesLatest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"services": groupServiceLatest(h.latestServices()),
+		"services": groupServiceLatest(h.latestServices(), h.thresholds),
 	})
 }
 
@@ -280,28 +287,11 @@ func (h *Handler) series(w http.ResponseWriter, r *http.Request, sampleType stri
 }
 
 func (h *Handler) monitoringStatus(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, buildMonitoringStatus(h.applyDisplayMetadata(h.state.LatestAll())))
+	writeJSON(w, http.StatusOK, buildMonitoringStatus(h.applyDisplayMetadata(h.state.LatestAll()), h.thresholds, time.Now()))
 }
 
 func (h *Handler) monitoringThresholds(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"generated_at": time.Now(),
-		"ping": map[string]any{
-			"external_rtt_avg_ms":   map[string]float64{"warning": 100, "critical": 200},
-			"external_loss_percent": map[string]float64{"warning": 1, "critical": 5},
-			"gateway_loss_percent":  map[string]float64{"warning": 0, "critical": 0},
-		},
-		"dns": map[string]any{
-			"duration_ms": map[string]float64{"warning": 300, "critical": 1000},
-		},
-		"http": map[string]any{
-			"total_ms": map[string]float64{"warning": 3000, "critical": 5000},
-		},
-		"download": downloadThresholdsResponse(),
-		"service": map[string]any{
-			"ok_rate_percent": map[string]float64{"warning": 95, "critical": 90},
-		},
-	})
+	writeJSON(w, http.StatusOK, monitoringThresholdsResponse(h.thresholds, time.Now()))
 }
 
 func (h *Handler) latestByType(sampleType string) []model.Sample {
@@ -389,11 +379,15 @@ func parseRange(value string) (time.Duration, error) {
 }
 
 type monitoringStatusResponse struct {
-	Alert   bool   `json:"alert"`
-	Source  string `json:"source"`
-	Level   string `json:"level"`
-	Title   string `json:"title"`
-	Message string `json:"message"`
+	Alert         bool               `json:"alert"`
+	Source        string             `json:"source"`
+	StatusID      string             `json:"status_id"`
+	GeneratedAt   time.Time          `json:"generated_at"`
+	Level         string             `json:"level"`
+	Title         string             `json:"title"`
+	Message       string             `json:"message"`
+	PrimaryReason *monitoringReason  `json:"primary_reason"`
+	Reasons       []monitoringReason `json:"reasons"`
 }
 
 type serviceGroupResponse struct {
@@ -422,7 +416,7 @@ type serviceSummaryResponse struct {
 	ErrorCount   int     `json:"error_count"`
 }
 
-func groupServiceLatest(samples []model.Sample) []serviceGroupResponse {
+func groupServiceLatest(samples []model.Sample, thresholds config.MonitoringThresholds) []serviceGroupResponse {
 	groups := make(map[string]*serviceGroupResponse)
 	for _, sample := range samples {
 		if isIgnoredServiceTarget(sample) {
@@ -445,7 +439,7 @@ func groupServiceLatest(samples []model.Sample) []serviceGroupResponse {
 			entry.Category = sample.Category
 		}
 		entry.Targets = append(entry.Targets, sample)
-		level, _ := sampleStatus(sample)
+		level := levelForReasons(collectMonitoringReasons([]model.Sample{sample}, thresholds))
 		if severityRank(level) > severityRank(entry.Status) {
 			entry.Status = level
 		}
@@ -569,189 +563,6 @@ func summarizeServices(samples []model.Sample) []serviceSummaryResponse {
 	return result
 }
 
-func buildMonitoringStatus(samples []model.Sample) monitoringStatusResponse {
-	if len(samples) == 0 {
-		return monitoringStatusResponse{
-			Alert:   true,
-			Source:  "network",
-			Level:   "warning",
-			Title:   "NO DATA",
-			Message: "no samples",
-		}
-	}
-
-	level := "ok"
-	var messages []string
-
-	for _, sample := range samples {
-		if isIgnoredServiceTarget(sample) {
-			continue
-		}
-		sampleLevel, message := sampleStatus(sample)
-		if sampleLevel == "ok" {
-			continue
-		}
-		if severityRank(sampleLevel) > severityRank(level) {
-			level = sampleLevel
-		}
-		messages = append(messages, message)
-	}
-
-	if len(messages) == 0 {
-		return monitoringStatusResponse{
-			Alert:   false,
-			Source:  "network",
-			Level:   "ok",
-			Title:   "NET OK",
-			Message: "all probes healthy",
-		}
-	}
-	if len(messages) > 2 {
-		messages = append(messages[:2], fmt.Sprintf("%d more", len(messages)-2))
-	}
-
-	return monitoringStatusResponse{
-		Alert:   true,
-		Source:  "network",
-		Level:   level,
-		Title:   titleForLevel(level),
-		Message: strings.Join(messages, ", "),
-	}
-}
-
-func sampleStatus(sample model.Sample) (string, string) {
-	switch sample.Type {
-	case "dns":
-		return dnsStatus(sample)
-	case "http":
-		return httpStatus(sample)
-	case "download":
-		return downloadStatus(sample)
-	}
-
-	rtt := 0.0
-	if sample.RTTAvgMs != nil {
-		rtt = *sample.RTTAvgMs
-	}
-
-	lossPercent := 0.0
-	if sample.LossPercent != nil {
-		lossPercent = *sample.LossPercent
-	}
-
-	message := fmt.Sprintf("%s loss %.1f%%, rtt %.0fms", sample.Name, lossPercent, rtt)
-
-	if sample.Error != "" {
-		return "critical", sample.Name + " probe error"
-	}
-	if sample.Name == "gateway" && lossPercent > 0 {
-		return "critical", message
-	}
-	if sample.Name != "gateway" && lossPercent >= 5 {
-		return "critical", message
-	}
-	if sample.Name != "gateway" && lossPercent >= 1 {
-		return "warning", message
-	}
-	if sample.Name != "gateway" && sample.RTTAvgMs != nil && *sample.RTTAvgMs >= 200 {
-		return "critical", message
-	}
-	if sample.Name != "gateway" && sample.RTTAvgMs != nil && *sample.RTTAvgMs >= 100 {
-		return "warning", message
-	}
-
-	return "ok", message
-}
-
-func dnsStatus(sample model.Sample) (string, string) {
-	duration := 0.0
-	if sample.DurationMs != nil {
-		duration = *sample.DurationMs
-	}
-	message := fmt.Sprintf("%s dns %.0fms", sample.Name, duration)
-
-	if sample.Error != "" || sample.OK != nil && !*sample.OK {
-		return "warning", sample.Name + " dns failure"
-	}
-	if duration >= 1000 {
-		return "critical", message
-	}
-	if duration >= 300 {
-		return "warning", message
-	}
-
-	return "ok", message
-}
-
-func httpStatus(sample model.Sample) (string, string) {
-	total := 0.0
-	if sample.TotalMs != nil {
-		total = *sample.TotalMs
-	}
-	label := sample.Name
-	if sample.Group != "" {
-		label = sample.Group
-	}
-	message := fmt.Sprintf("%s http total %.0fms", label, total)
-
-	if sample.Error != "" || sample.OK != nil && !*sample.OK {
-		if isTimeoutError(sample.Error) {
-			return "warning", label + " timeout"
-		}
-		return "warning", label + " http failure"
-	}
-	if total >= 5000 {
-		return "critical", message
-	}
-	if total >= 3000 {
-		return "warning", message
-	}
-
-	return "ok", message
-}
-
-type downloadThreshold struct {
-	WarningMbps  float64
-	CriticalMbps float64
-}
-
-var downloadMbpsThresholds = map[string]downloadThreshold{
-	"r2_1mb":  {WarningMbps: 5, CriticalMbps: 1},
-	"r2_10mb": {WarningMbps: 10, CriticalMbps: 3},
-}
-
-func downloadStatus(sample model.Sample) (string, string) {
-	if sample.Error != "" || sample.OK != nil && !*sample.OK {
-		return "warning", "download " + sample.Name + " failure"
-	}
-	if sample.Mbps == nil {
-		return "ok", "download " + sample.Name
-	}
-	message := fmt.Sprintf("download %s %.1fMbps", sample.Name, *sample.Mbps)
-	threshold, ok := downloadMbpsThresholds[sample.Name]
-	if !ok {
-		return "ok", message
-	}
-	if *sample.Mbps < threshold.CriticalMbps {
-		return "critical", message
-	}
-	if *sample.Mbps < threshold.WarningMbps {
-		return "warning", message
-	}
-	return "ok", message
-}
-
-func downloadThresholdsResponse() map[string]map[string]float64 {
-	result := make(map[string]map[string]float64, len(downloadMbpsThresholds))
-	for name, threshold := range downloadMbpsThresholds {
-		result[name+"_mbps"] = map[string]float64{
-			"warning":  threshold.WarningMbps,
-			"critical": threshold.CriticalMbps,
-		}
-	}
-	return result
-}
-
 func sortSamplesForDisplay(samples []model.Sample) {
 	sort.SliceStable(samples, func(i, j int) bool {
 		leftOrder := displayOrderRank(samples[i].DisplayOrder)
@@ -804,17 +615,6 @@ func severityRank(level string) int {
 		return 1
 	default:
 		return 0
-	}
-}
-
-func titleForLevel(level string) string {
-	switch level {
-	case "critical":
-		return "NET DOWN"
-	case "warning":
-		return "NET SLOW"
-	default:
-		return "NET OK"
 	}
 }
 

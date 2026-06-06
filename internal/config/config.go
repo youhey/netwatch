@@ -24,8 +24,41 @@ type Config struct {
 	HTTPTimeoutSeconds   int                   `json:"http_timeout_seconds"`
 	HTTPDisableKeepAlive bool                  `json:"http_disable_keepalive"`
 	HTTPMaxBodyBytes     int64                 `json:"http_max_body_bytes"`
+	MonitoringThresholds MonitoringThresholds  `json:"monitoring_thresholds"`
 	DownloadProbes       []DownloadProbeConfig `json:"download_probes"`
 	Targets              []TargetConfig        `json:"targets"`
+}
+
+type Threshold struct {
+	Warning  float64 `json:"warning"`
+	Critical float64 `json:"critical"`
+}
+
+type MonitoringThresholds struct {
+	Ping     PingThresholds       `json:"ping"`
+	DNS      DNSThresholds        `json:"dns"`
+	HTTP     HTTPThresholds       `json:"http"`
+	Download map[string]Threshold `json:"download"`
+	Service  ServiceThresholds    `json:"service"`
+}
+
+type PingThresholds struct {
+	GatewayRTTAvgMs     Threshold `json:"gateway_rtt_avg_ms"`
+	GatewayLossPercent  Threshold `json:"gateway_loss_percent"`
+	ExternalRTTAvgMs    Threshold `json:"external_rtt_avg_ms"`
+	ExternalLossPercent Threshold `json:"external_loss_percent"`
+}
+
+type DNSThresholds struct {
+	DurationMs Threshold `json:"duration_ms"`
+}
+
+type HTTPThresholds struct {
+	TotalMs Threshold `json:"total_ms"`
+}
+
+type ServiceThresholds struct {
+	OKRatePercent Threshold `json:"ok_rate_percent"`
 }
 
 type TargetConfig struct {
@@ -86,6 +119,31 @@ func Default() Config {
 		HTTPTimeoutSeconds:   10,
 		HTTPDisableKeepAlive: true,
 		HTTPMaxBodyBytes:     262144,
+		MonitoringThresholds: DefaultMonitoringThresholds(),
+	}
+}
+
+func DefaultMonitoringThresholds() MonitoringThresholds {
+	return MonitoringThresholds{
+		Ping: PingThresholds{
+			GatewayRTTAvgMs:     Threshold{Warning: 5, Critical: 20},
+			GatewayLossPercent:  Threshold{Warning: 0.1, Critical: 1},
+			ExternalRTTAvgMs:    Threshold{Warning: 100, Critical: 200},
+			ExternalLossPercent: Threshold{Warning: 1, Critical: 5},
+		},
+		DNS: DNSThresholds{
+			DurationMs: Threshold{Warning: 300, Critical: 1000},
+		},
+		HTTP: HTTPThresholds{
+			TotalMs: Threshold{Warning: 3000, Critical: 5000},
+		},
+		Download: map[string]Threshold{
+			"r2_1mb_mbps":  {Warning: 5, Critical: 1},
+			"r2_10mb_mbps": {Warning: 10, Critical: 3},
+		},
+		Service: ServiceThresholds{
+			OKRatePercent: Threshold{Warning: 95, Critical: 90},
+		},
 	}
 }
 
@@ -125,6 +183,9 @@ func (c Config) Validate() error {
 	}
 	if c.HTTPMaxBodyBytes <= 0 {
 		return errors.New("http_max_body_bytes must be greater than 0")
+	}
+	if err := c.MonitoringThresholds.Validate(); err != nil {
+		return err
 	}
 	if len(c.Targets) == 0 {
 		return errors.New("targets must not be empty")
@@ -207,6 +268,56 @@ func (c Config) Validate() error {
 		}
 	}
 
+	return nil
+}
+
+func (t MonitoringThresholds) Validate() error {
+	if err := validateHighBadThreshold("monitoring_thresholds.ping.gateway_rtt_avg_ms", t.Ping.GatewayRTTAvgMs); err != nil {
+		return err
+	}
+	if err := validateHighBadThreshold("monitoring_thresholds.ping.gateway_loss_percent", t.Ping.GatewayLossPercent); err != nil {
+		return err
+	}
+	if err := validateHighBadThreshold("monitoring_thresholds.ping.external_rtt_avg_ms", t.Ping.ExternalRTTAvgMs); err != nil {
+		return err
+	}
+	if err := validateHighBadThreshold("monitoring_thresholds.ping.external_loss_percent", t.Ping.ExternalLossPercent); err != nil {
+		return err
+	}
+	if err := validateHighBadThreshold("monitoring_thresholds.dns.duration_ms", t.DNS.DurationMs); err != nil {
+		return err
+	}
+	if err := validateHighBadThreshold("monitoring_thresholds.http.total_ms", t.HTTP.TotalMs); err != nil {
+		return err
+	}
+	for name, threshold := range t.Download {
+		if err := validateLowBadThreshold("monitoring_thresholds.download."+name, threshold); err != nil {
+			return err
+		}
+	}
+	if err := validateLowBadThreshold("monitoring_thresholds.service.ok_rate_percent", t.Service.OKRatePercent); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateHighBadThreshold(name string, threshold Threshold) error {
+	if threshold.Warning <= 0 || threshold.Critical <= 0 {
+		return fmt.Errorf("%s warning and critical must be greater than 0", name)
+	}
+	if threshold.Critical < threshold.Warning {
+		return fmt.Errorf("%s critical must be greater than or equal to warning", name)
+	}
+	return nil
+}
+
+func validateLowBadThreshold(name string, threshold Threshold) error {
+	if threshold.Warning <= 0 || threshold.Critical <= 0 {
+		return fmt.Errorf("%s warning and critical must be greater than 0", name)
+	}
+	if threshold.Critical > threshold.Warning {
+		return fmt.Errorf("%s critical must be less than or equal to warning", name)
+	}
 	return nil
 }
 

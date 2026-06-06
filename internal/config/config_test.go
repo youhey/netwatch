@@ -158,6 +158,82 @@ func TestLoadDownloadProbes(t *testing.T) {
 	}
 }
 
+func TestDefaultMonitoringThresholds(t *testing.T) {
+	thresholds := DefaultMonitoringThresholds()
+	if thresholds.Ping.GatewayRTTAvgMs.Warning != 5 || thresholds.Ping.GatewayRTTAvgMs.Critical != 20 {
+		t.Fatalf("gateway RTT threshold = %+v, want default", thresholds.Ping.GatewayRTTAvgMs)
+	}
+	if thresholds.Download["r2_1mb_mbps"].Warning != 5 || thresholds.Download["r2_1mb_mbps"].Critical != 1 {
+		t.Fatalf("r2_1mb threshold = %+v, want default", thresholds.Download["r2_1mb_mbps"])
+	}
+	if thresholds.Service.OKRatePercent.Warning != 95 || thresholds.Service.OKRatePercent.Critical != 90 {
+		t.Fatalf("service threshold = %+v, want default", thresholds.Service.OKRatePercent)
+	}
+}
+
+func TestLoadMonitoringThresholds(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "netwatch.json")
+	content := `{
+  "listen_addr": "127.0.0.1:8080",
+  "data_dir": "/var/lib/netwatch",
+  "data_file_pattern": "samples-%Y-%m-%d.jsonl",
+  "retention_days": 7,
+  "monitoring_thresholds": {
+    "http": {
+      "total_ms": {"warning": 2500, "critical": 4500}
+    },
+    "download": {
+      "r2_1mb_mbps": {"warning": 8, "critical": 2}
+    }
+  },
+  "targets": [
+    {
+      "name": "home",
+      "type": "http",
+      "url": "https://example.com/"
+    }
+  ]
+}`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.MonitoringThresholds.HTTP.TotalMs.Warning != 2500 || cfg.MonitoringThresholds.HTTP.TotalMs.Critical != 4500 {
+		t.Fatalf("http threshold = %+v, want configured values", cfg.MonitoringThresholds.HTTP.TotalMs)
+	}
+	if cfg.MonitoringThresholds.Download["r2_1mb_mbps"].Warning != 8 || cfg.MonitoringThresholds.Download["r2_10mb_mbps"].Warning != 10 {
+		t.Fatalf("download thresholds = %+v, want configured value with default retained", cfg.MonitoringThresholds.Download)
+	}
+	if cfg.MonitoringThresholds.Ping.ExternalRTTAvgMs.Warning != 100 {
+		t.Fatalf("ping threshold = %+v, want default retained", cfg.MonitoringThresholds.Ping.ExternalRTTAvgMs)
+	}
+}
+
+func TestValidateMonitoringThresholds(t *testing.T) {
+	cfg := Default()
+	cfg.Targets = []TargetConfig{
+		{Name: "home", Type: "http", URL: "https://example.com/"},
+	}
+
+	cfg.MonitoringThresholds.HTTP.TotalMs = Threshold{Warning: 5000, Critical: 3000}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() error = nil, want invalid high-bad threshold error")
+	}
+
+	cfg = Default()
+	cfg.Targets = []TargetConfig{
+		{Name: "home", Type: "http", URL: "https://example.com/"},
+	}
+	cfg.MonitoringThresholds.Download["r2_1mb_mbps"] = Threshold{Warning: 1, Critical: 5}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() error = nil, want invalid low-bad threshold error")
+	}
+}
+
 func TestValidateDownloadProbeURL(t *testing.T) {
 	cfg := Default()
 	cfg.Targets = []TargetConfig{

@@ -65,6 +65,27 @@ DNS / HTTP 計測は Go の標準ライブラリで実行します。
   "http_timeout_seconds": 10,
   "http_disable_keepalive": true,
   "http_max_body_bytes": 262144,
+  "monitoring_thresholds": {
+    "ping": {
+      "gateway_rtt_avg_ms": {"warning": 5, "critical": 20},
+      "gateway_loss_percent": {"warning": 0.1, "critical": 1},
+      "external_rtt_avg_ms": {"warning": 100, "critical": 200},
+      "external_loss_percent": {"warning": 1, "critical": 5}
+    },
+    "dns": {
+      "duration_ms": {"warning": 300, "critical": 1000}
+    },
+    "http": {
+      "total_ms": {"warning": 3000, "critical": 5000}
+    },
+    "download": {
+      "r2_1mb_mbps": {"warning": 5, "critical": 1},
+      "r2_10mb_mbps": {"warning": 10, "critical": 3}
+    },
+    "service": {
+      "ok_rate_percent": {"warning": 95, "critical": 90}
+    }
+  },
   "download_probes": [
     {
       "name": "r2_1mb",
@@ -152,6 +173,8 @@ DNS / HTTP 計測は Go の標準ライブラリで実行します。
 `download_probes[]` は HTTP probe とは別に、大きな body を最後まで読み切って throughput を記録します。`enabled: false` の probe は実行されません。
 
 `label` は API レスポンスの `display_name` として返す表示名です。未指定時は `name` から自動生成します。`display_order` は Viewer などの表示順に使う優先度です。`1` 以上の小さい値ほど前に並び、未指定または `0` の item は従来通り `name` 昇順で後ろに並びます。後から間に追加しやすいよう、初期設定では 10 刻みで指定しています。
+
+`monitoring_thresholds` は `/api/monitoring/status` の判定と `/api/monitoring/thresholds` の返却値に使います。RTT / loss / duration / HTTP total は値が大きいほど悪い指標で、download Mbps と service ok rate は値が小さいほど悪い指標です。不正な閾値は起動時の設定検証でエラーになります。
 
 既存の単一ファイル設定も引き続き使えます。
 
@@ -600,6 +623,31 @@ Chart response には以下の metadata が含まれます。
 
 `/api/monitoring/thresholds` は、Viewer がグラフに警戒ラインを描くためのしきい値を返します。値は `/api/monitoring/status` の判定と同じです。
 
+```json
+{
+  "generated_at": "2026-06-07T12:00:00+09:00",
+  "ping": {
+    "gateway_rtt_avg_ms": {"warning": 5, "critical": 20},
+    "gateway_loss_percent": {"warning": 0.1, "critical": 1},
+    "external_rtt_avg_ms": {"warning": 100, "critical": 200},
+    "external_loss_percent": {"warning": 1, "critical": 5}
+  },
+  "dns": {
+    "duration_ms": {"warning": 300, "critical": 1000}
+  },
+  "http": {
+    "total_ms": {"warning": 3000, "critical": 5000}
+  },
+  "download": {
+    "r2_1mb_mbps": {"warning": 5, "critical": 1},
+    "r2_10mb_mbps": {"warning": 10, "critical": 3}
+  },
+  "service": {
+    "ok_rate_percent": {"warning": 95, "critical": 90}
+  }
+}
+```
+
 `/api/capabilities` は、API version と利用可能な機能を返します。
 
 ```json
@@ -689,15 +737,43 @@ curl http://127.0.0.1:8080/api/monitoring/status
 ```json
 {
   "alert": true,
-  "source": "network",
+  "source": "netwatch",
+  "status_id": "warning-download_slow-r2_1mb-a01b46b4",
+  "generated_at": "2026-06-07T12:00:00+09:00",
   "level": "warning",
-  "title": "NET SLOW",
-  "message": "cloudflare_home http total 2500ms"
+  "title": "NET WARNING",
+  "message": "download r2_1mb 3.2Mbps",
+  "primary_reason": {
+    "code": "download_slow",
+    "level": "warning",
+    "target": "r2_1mb",
+    "metric": "mbps",
+    "value": 3.2,
+    "warning": 5,
+    "critical": 1
+  },
+  "reasons": [
+    {
+      "code": "download_slow",
+      "level": "warning",
+      "target": "r2_1mb",
+      "metric": "mbps",
+      "value": 3.2,
+      "warning": 5,
+      "critical": 1
+    }
+  ]
 }
 ```
 
 判定目安:
 
+- `level` は reason の中に `critical` があれば `critical`、それ以外で reason があれば `warning`、reason がなければ `ok` です
+- `status_id` は正常時 `ok`、異常時は level / primary reason / target / reason fingerprint から作る安定 ID です。同じ異常理由の継続中に毎回変わる timestamp 型 ID ではありません
+- `primary_reason` は `critical` 優先、次に reason code 優先度、次に閾値超過率、最後に検出順で選ばれます
+- reason code 優先度は `gateway_loss`, `packet_loss`, `download_slow`, `download_failure`, `http_timeout`, `dns_failure`, `external_rtt_high`, `gateway_rtt_high`, `dns_slow`, `http_slow`, `service_failure`, `service_group_degraded` の順です
+- `gateway` の packet loss が 0.1% 超なら `warning`、1% 以上なら `critical`
+- `gateway` の RTT avg が 5ms 以上なら `warning`、20ms 以上なら `critical`
 - external target の packet loss が 1% 以上なら `warning`
 - external target の packet loss が 5% 以上なら `critical`
 - external target の RTT avg が 200ms 以上なら `critical`
@@ -709,10 +785,10 @@ curl http://127.0.0.1:8080/api/monitoring/status
 - HTTP total が 5000ms 以上なら `critical`
 - HTTP timeout / failure は `warning`
 - 実サービス HTTP timeout / failure は `warning`
+- service group の OK rate が 95% 未満なら `warning`、90% 未満なら `critical`
 - download failure は `warning`
 - `r2_1mb` が 5Mbps 未満なら `warning`、1Mbps 未満なら `critical`
 - `r2_10mb` が 10Mbps 未満なら `warning`、3Mbps 未満なら `critical`
-- `gateway` に packet loss がある場合は `critical`
 
 ## 手動確認コマンド
 

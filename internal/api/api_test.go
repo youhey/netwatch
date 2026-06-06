@@ -374,7 +374,10 @@ func TestChartsOverview(t *testing.T) {
 }
 
 func TestMonitoringThresholds(t *testing.T) {
-	handler := newTestHandler()
+	state := collector.NewState()
+	thresholds := config.DefaultMonitoringThresholds()
+	thresholds.HTTP.TotalMs = config.Threshold{Warning: 2500, Critical: 4500}
+	handler := New(state, "test").WithMonitoringThresholds(thresholds).Routes()
 
 	req := httptest.NewRequest(http.MethodGet, "/api/monitoring/thresholds", nil)
 	rec := httptest.NewRecorder()
@@ -384,12 +387,17 @@ func TestMonitoringThresholds(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 
-	var body map[string]any
+	var body struct {
+		HTTP struct {
+			TotalMs config.Threshold `json:"total_ms"`
+		} `json:"http"`
+		Download map[string]config.Threshold `json:"download"`
+	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("Unmarshal() error = %v", err)
 	}
-	if body["ping"] == nil || body["dns"] == nil || body["http"] == nil || body["download"] == nil || body["service"] == nil {
-		t.Fatalf("threshold body = %+v, want threshold groups", body)
+	if body.HTTP.TotalMs.Warning != 2500 || body.HTTP.TotalMs.Critical != 4500 || body.Download["r2_1mb_mbps"].Warning != 5 {
+		t.Fatalf("threshold body = %+v, want configured thresholds", body)
 	}
 }
 
@@ -485,8 +493,11 @@ func TestMonitoringStatusWarnsOnHTTPFailure(t *testing.T) {
 	if !body.Alert || body.Level != "warning" {
 		t.Fatalf("body = %+v, want warning alert", body)
 	}
-	if body.Message != "steam timeout" {
-		t.Fatalf("Message = %q, want steam timeout", body.Message)
+	if body.Source != "netwatch" || body.Title != "NET WARNING" || body.StatusID == "" || body.PrimaryReason == nil || body.PrimaryReason.Code != "service_failure" || len(body.Reasons) != 1 {
+		t.Fatalf("body = %+v, want service failure reason", body)
+	}
+	if body.Message != "service steam_store failure" {
+		t.Fatalf("Message = %q, want service failure summary", body.Message)
 	}
 }
 
@@ -507,7 +518,7 @@ func TestMonitoringStatusWarnsOnDownloadSlow(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("Unmarshal() error = %v", err)
 	}
-	if !body.Alert || body.Level != "warning" || body.Message != "download r2_1mb 3.2Mbps" {
+	if !body.Alert || body.Level != "warning" || body.Message != "download r2_1mb 3.2Mbps" || body.PrimaryReason == nil || body.PrimaryReason.Code != "download_slow" {
 		t.Fatalf("body = %+v, want download warning", body)
 	}
 }
@@ -531,7 +542,7 @@ func TestMonitoringStatusOK(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("Unmarshal() error = %v", err)
 	}
-	if body.Alert || body.Level != "ok" || body.Message != "all probes healthy" {
+	if body.Alert || body.Source != "netwatch" || body.StatusID != "ok" || body.Level != "ok" || body.Title != "NET OK" || body.Message != "all probes healthy" || body.PrimaryReason != nil || len(body.Reasons) != 0 {
 		t.Fatalf("body = %+v, want ok", body)
 	}
 }
@@ -552,7 +563,7 @@ func TestMonitoringStatusCriticalThresholds(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("Unmarshal() error = %v", err)
 	}
-	if !body.Alert || body.Level != "critical" {
+	if !body.Alert || body.Level != "critical" || body.Title != "NET CRITICAL" || body.PrimaryReason == nil || body.PrimaryReason.Code != "external_rtt_high" {
 		t.Fatalf("body = %+v, want critical alert", body)
 	}
 }

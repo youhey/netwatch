@@ -51,7 +51,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:              cfg.ListenAddr,
-		Handler:           api.New(state, version, cfg.Targets).WithDownloadProbes(cfg.EnabledDownloadProbes()).Routes(),
+		Handler:           api.New(state, version, cfg.Targets).WithDownloadProbes(cfg.EnabledDownloadProbes()).WithMonitoringThresholds(cfg.MonitoringThresholds).Routes(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
