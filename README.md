@@ -19,10 +19,12 @@
 - Go 標準 `net/http` + `httptrace` による HTTP 応答時間の測定
 - 実サービス・ゲーム関連サービス・クラウドサービス入口 URL の低頻度 HTTP 監視
 - HTTP 計測時の keep-alive 無効化と body 読み取り上限
+- Cloudflare R2 公開ファイルを使った download probe
 - packet loss と RTT min/avg/max の記録
 - DNS duration と resolved IP の記録
 - HTTP DNS/connect/TLS/TTFB/total time と status の記録
 - HTTP body 読み取り bytes と truncate 状態の記録
+- download bytes / duration / throughput Mbps の記録
 - JSONL への append-only 保存
 - JSONL の日次ローテーションと保持期間制御
 - 起動時の JSONL 読み込み
@@ -32,7 +34,7 @@
 - 監視向け簡易ステータス API
 - systemd 常駐用 unit
 
-download 速度計測、SQLite 保存はまだ未実装です。
+SQLite 保存はまだ未実装です。
 
 ## Raspberry Pi 側の必要パッケージ
 
@@ -63,6 +65,24 @@ DNS / HTTP 計測は Go の標準ライブラリで実行します。
   "http_timeout_seconds": 10,
   "http_disable_keepalive": true,
   "http_max_body_bytes": 262144,
+  "download_probes": [
+    {
+      "name": "r2_1mb",
+      "url": "https://pub-66e2ade26de745138962434a04cb1a46.r2.dev/netwatch-1mb.bin",
+      "expected_bytes": 1048576,
+      "interval_seconds": 600,
+      "timeout_seconds": 20,
+      "enabled": true
+    },
+    {
+      "name": "r2_10mb",
+      "url": "https://pub-66e2ade26de745138962434a04cb1a46.r2.dev/netwatch-10mb.bin",
+      "expected_bytes": 10485760,
+      "interval_seconds": 3600,
+      "timeout_seconds": 60,
+      "enabled": true
+    }
+  ],
   "targets": [
     {
       "name": "gateway",
@@ -113,6 +133,8 @@ DNS / HTTP 計測は Go の標準ライブラリで実行します。
 `targets[].type` は `ping`、`dns`、`http` に対応しています。
 `http` target の method は Phase 3 では `GET` 固定です。
 
+`download_probes[]` は HTTP probe とは別に、大きな body を最後まで読み切って throughput を記録します。`enabled: false` の probe は実行されません。
+
 既存の単一ファイル設定も引き続き使えます。
 
 ```json
@@ -153,6 +175,39 @@ HTTP 計測は時系列比較の安定性を優先し、デフォルトで keep-
 ```text
 youtube, netflix, slack, steam, aws, azure, psn, pcgame
 ```
+
+## Download Probe
+
+Phase 5 では、Cloudflare R2 の public `r2.dev` URL に置いた固定サイズファイルを download し、`downloaded_bytes`、`duration_ms`、`bytes_per_sec`、`mbps` を記録します。
+
+これは絶対的な回線速度測定ではなく、同じ Raspberry Pi、同じ経路、同じファイルを継続測定して時間帯ごとの傾向を見るための probe です。初代 Raspberry Pi の有線 LAN は 100Mbps 制約があり、CPU や USB/LAN 構成の影響も受けるため、結果は契約回線の最大速度とは一致しません。
+
+当面は以下の R2 `r2.dev` public URL を使います。将来、Cloudflare 側の運用を変える場合はカスタムドメインに切り替える可能性があります。
+
+```json
+{
+  "download_probes": [
+    {
+      "name": "r2_1mb",
+      "url": "https://pub-66e2ade26de745138962434a04cb1a46.r2.dev/netwatch-1mb.bin",
+      "expected_bytes": 1048576,
+      "interval_seconds": 600,
+      "timeout_seconds": 20,
+      "enabled": true
+    },
+    {
+      "name": "r2_10mb",
+      "url": "https://pub-66e2ade26de745138962434a04cb1a46.r2.dev/netwatch-10mb.bin",
+      "expected_bytes": 10485760,
+      "interval_seconds": 3600,
+      "timeout_seconds": 60,
+      "enabled": true
+    }
+  ]
+}
+```
+
+測定頻度を高くしすぎると、測定自体が回線を消費します。初期設定は `r2_1mb` が 600 秒、`r2_10mb` が 3600 秒です。
 
 ## ローカル実行
 
@@ -257,6 +312,18 @@ curl http://127.0.0.1:8080/api/latest
       "http_status": 200,
       "total_ms": 132.4
     }
+  ],
+  "download": [
+    {
+      "name": "r2_1mb",
+      "url": "https://pub-66e2ade26de745138962434a04cb1a46.r2.dev/netwatch-1mb.bin",
+      "expected_bytes": 1048576,
+      "downloaded_bytes": 1048576,
+      "duration_ms": 1000.0,
+      "bytes_per_sec": 1048576.0,
+      "mbps": 8.388608,
+      "ok": true
+    }
   ]
 }
 ```
@@ -277,6 +344,12 @@ HTTP target の最新結果:
 
 ```bash
 curl http://127.0.0.1:8080/api/http/latest
+```
+
+Download probe の最新結果:
+
+```bash
+curl http://127.0.0.1:8080/api/download/latest
 ```
 
 実サービス group の最新状態:
@@ -316,6 +389,7 @@ target ごとの時系列:
 curl 'http://127.0.0.1:8080/api/ping/series?name=cloudflare_dns&range=24h'
 curl 'http://127.0.0.1:8080/api/dns/series?name=google_dns_lookup&range=24h'
 curl 'http://127.0.0.1:8080/api/http/series?name=cloudflare_home&range=24h'
+curl 'http://127.0.0.1:8080/api/download/series?name=r2_1mb&range=24h'
 curl 'http://127.0.0.1:8080/api/services/series?group=pcgame&range=24h'
 curl 'http://127.0.0.1:8080/api/services/series?name=youtube_home&range=24h'
 ```
@@ -336,7 +410,7 @@ Phase 4 では、Mac アプリ `NetwatchViewer` の Swift Charts 表示向けに
 ```
 
 `max_points` は chart points の最大数です。未指定時は `500`、指定可能範囲は `10` から `2000` です。範囲外や不正値は `400 Bad Request` を返します。
-不正な `range` / `bucket` も `400 Bad Request` です。存在しない `name` / `group` は `404` ではなく、空の `points` を返します。
+不正な `range` / `bucket` も `400 Bad Request` です。bucket 付き chart series で存在しない `name` / `group` は structured `404 Not Found` を返します。
 
 Ping chart:
 
@@ -376,6 +450,32 @@ HTTP chart:
 curl 'http://127.0.0.1:8080/api/http/series?name=youtube_home&range=24h&bucket=5m'
 ```
 
+Download chart:
+
+```bash
+curl 'http://127.0.0.1:8080/api/download/series?name=r2_1mb&range=24h&bucket=5m&max_points=500'
+```
+
+```json
+{
+  "type": "download",
+  "name": "r2_1mb",
+  "range": "24h",
+  "bucket": "5m",
+  "bucket_seconds": 300,
+  "points": [
+    {
+      "ts": "2026-06-06T12:00:00+09:00",
+      "avg_mbps": 31.4,
+      "min_mbps": 24.8,
+      "max_mbps": 40.1,
+      "failure_count": 0,
+      "sample_count": 1
+    }
+  ]
+}
+```
+
 Services chart:
 
 ```bash
@@ -387,8 +487,9 @@ Chart 集約仕様:
 - Ping: `rtt_avg_ms` の平均、`rtt_min_ms` の最小、`rtt_max_ms` の最大、`sent` / `received` から再計算した `loss_percent`
 - DNS: 成功 sample の `duration_ms` 平均/最小/最大、失敗 sample は `failure_count`
 - HTTP: 成功 sample の `total_ms` / `ttfb_ms` 平均、`total_ms` 最大、失敗 sample は `failure_count` / `timeout_count`
+- Download: 成功 sample の `mbps` 平均/最小/最大、失敗 sample は `failure_count` / `timeout_count`
 - Services: group 内 HTTP sample の成功 `total_ms` 平均/最大、`ok_rate`、`failure_count`
-- `ok=false` の DNS/HTTP sample は平均計算から除外し、失敗数には含めます
+- `ok=false` の DNS/HTTP/download sample は平均計算から除外し、失敗数には含めます
 - bucket 内に成功 sample がない場合、平均値は JSON 上で省略され、`0ms` と欠損を区別します
 
 Viewer 補助 API:
@@ -418,11 +519,25 @@ curl http://127.0.0.1:8080/api/capabilities
   "ping": [],
   "dns": [],
   "http": [],
+  "download": [
+    {
+      "name": "r2_1mb",
+      "url": "https://pub-66e2ade26de745138962434a04cb1a46.r2.dev/netwatch-1mb.bin",
+      "expected_bytes": 1048576,
+      "label": "R2 1MB"
+    },
+    {
+      "name": "r2_10mb",
+      "url": "https://pub-66e2ade26de745138962434a04cb1a46.r2.dev/netwatch-10mb.bin",
+      "expected_bytes": 10485760,
+      "label": "R2 10MB"
+    }
+  ],
   "service_groups": []
 }
 ```
 
-`/api/charts/overview` は、代表的な ping / HTTP / service group の chart data をまとめて返します。存在しない target や group はスキップします。
+`/api/charts/overview` は、代表的な ping / HTTP / download / service group の chart data をまとめて返します。存在しない target や group はスキップします。
 
 Chart response には以下の metadata が含まれます。
 
@@ -456,9 +571,16 @@ Chart response には以下の metadata が含まれます。
   "version": "dev",
   "api_version": "0.4",
   "features": {
+    "ping": true,
+    "dns": true,
+    "http": true,
+    "download": true,
+    "download_series": true,
     "charts": true,
+    "charts_download": true,
     "charts_catalog": true,
     "charts_overview": true,
+    "monitoring_status": true,
     "monitoring_thresholds": true
   }
 }
@@ -550,6 +672,9 @@ curl http://127.0.0.1:8080/api/monitoring/status
 - HTTP total が 5000ms 以上なら `critical`
 - HTTP timeout / failure は `warning`
 - 実サービス HTTP timeout / failure は `warning`
+- download failure は `warning`
+- `r2_1mb` が 5Mbps 未満なら `warning`、1Mbps 未満なら `critical`
+- `r2_10mb` が 10Mbps 未満なら `warning`、3Mbps 未満なら `critical`
 - `gateway` に packet loss がある場合は `critical`
 
 ## 手動確認コマンド
@@ -570,12 +695,19 @@ curl http://netpi:8080/api/monitoring/thresholds
 curl http://netpi:8080/api/capabilities
 curl "http://netpi:8080/api/ping/series?name=cloudflare_dns&range=24h&bucket=5m"
 curl "http://netpi:8080/api/http/series?name=youtube_home&range=24h&bucket=5m"
+curl "http://netpi:8080/api/download/series?name=r2_1mb&range=24h&bucket=5m"
 curl "http://netpi:8080/api/services/series?group=pcgame&range=24h&bucket=5m"
 curl -o /dev/null -s -w "dns=%{time_namelookup} connect=%{time_connect} tls=%{time_appconnect} ttfb=%{time_starttransfer} total=%{time_total} code=%{http_code}\n" https://www.cloudflare.com/
 curl -o /dev/null -s -w "dns=%{time_namelookup} connect=%{time_connect} tls=%{time_appconnect} ttfb=%{time_starttransfer} total=%{time_total} code=%{http_code}\n" https://www.youtube.com/
 curl -o /dev/null -s -w "dns=%{time_namelookup} connect=%{time_connect} tls=%{time_appconnect} ttfb=%{time_starttransfer} total=%{time_total} code=%{http_code}\n" https://store.steampowered.com/
 curl -o /dev/null -s -w "dns=%{time_namelookup} connect=%{time_connect} tls=%{time_appconnect} ttfb=%{time_starttransfer} total=%{time_total} code=%{http_code}\n" https://status.playstation.com/
+curl -o /dev/null -L -w "size=%{size_download} total=%{time_total} speed=%{speed_download}\n" \
+  https://pub-66e2ade26de745138962434a04cb1a46.r2.dev/netwatch-1mb.bin
+curl -o /dev/null -L -w "size=%{size_download} total=%{time_total} speed=%{speed_download}\n" \
+  https://pub-66e2ade26de745138962434a04cb1a46.r2.dev/netwatch-10mb.bin
 ```
+
+R2 download の期待値は、1MB が `1048576` bytes、10MB が `10485760` bytes です。
 
 ## 開発用コマンド
 
@@ -614,4 +746,10 @@ HTTP:
 
 ```json
 {"ts":"2026-06-04T12:00:00+09:00","type":"http","group":"youtube","category":"service","name":"youtube_home","url":"https://www.youtube.com/","method":"GET","ok":true,"http_status":200,"dns_ms":14.2,"connect_ms":20.1,"tls_ms":42.4,"ttfb_ms":120.5,"total_ms":210.2,"content_length_read":262144,"body_truncated":true}
+```
+
+Download:
+
+```json
+{"ts":"2026-06-06T12:00:00+09:00","type":"download","name":"r2_1mb","url":"https://pub-66e2ade26de745138962434a04cb1a46.r2.dev/netwatch-1mb.bin","expected_bytes":1048576,"downloaded_bytes":1048576,"duration_ms":1000,"bytes_per_sec":1048576,"mbps":8.388608,"ok":true}
 ```

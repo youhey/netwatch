@@ -30,6 +30,10 @@ type chartPoint struct {
 	MaxTotalMs *float64 `json:"max_total_ms,omitempty"`
 	OKRate     *float64 `json:"ok_rate,omitempty"`
 
+	AvgMbps *float64 `json:"avg_mbps,omitempty"`
+	MinMbps *float64 `json:"min_mbps,omitempty"`
+	MaxMbps *float64 `json:"max_mbps,omitempty"`
+
 	FailureCount int `json:"failure_count"`
 	TimeoutCount int `json:"timeout_count"`
 }
@@ -121,6 +125,10 @@ func buildChartResponse(sampleType, rangeValue, bucketValue string, bucket time.
 		response.Category = samples[0].Category
 		response.URL = samples[0].URL
 		response.Points = aggregateHTTP(samples, bucket)
+	case "download":
+		response.Name = samples[0].Name
+		response.URL = samples[0].URL
+		response.Points = aggregateDownload(samples, bucket)
 	}
 	response.Points = thinPoints(response.Points, maxPoints)
 	return response
@@ -266,6 +274,41 @@ func aggregateServices(samples []model.Sample, bucket time.Duration) []chartPoin
 		addHTTPToAggregate(agg, sample)
 	}
 	return httpPointsFromBuckets(buckets, true)
+}
+
+func aggregateDownload(samples []model.Sample, bucket time.Duration) []chartPoint {
+	buckets := newBuckets(samples, bucket)
+	for _, sample := range samples {
+		agg := buckets[bucketStart(sample.Timestamp, bucket)]
+		agg.sampleCount++
+		if sample.OK != nil && !*sample.OK || sample.Error != "" {
+			agg.failures++
+			if isTimeoutError(sample.Error) {
+				agg.timeouts++
+			}
+			continue
+		}
+		if sample.Mbps != nil {
+			agg.avgSum += *sample.Mbps
+			agg.avgCount++
+			agg.minValue = minPtr(agg.minValue, *sample.Mbps)
+			agg.maxValue = maxPtr(agg.maxValue, *sample.Mbps)
+		}
+	}
+
+	points := make([]chartPoint, 0, len(buckets))
+	for _, agg := range sortedBuckets(buckets) {
+		points = append(points, chartPoint{
+			Timestamp:    agg.ts,
+			SampleCount:  agg.sampleCount,
+			AvgMbps:      avgPtr(agg.avgSum, agg.avgCount),
+			MinMbps:      agg.minValue,
+			MaxMbps:      agg.maxValue,
+			FailureCount: agg.failures,
+			TimeoutCount: agg.timeouts,
+		})
+	}
+	return points
 }
 
 func addHTTPToAggregate(agg *bucketAggregate, sample model.Sample) {

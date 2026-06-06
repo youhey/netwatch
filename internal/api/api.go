@@ -16,9 +16,10 @@ import (
 const apiVersion = "0.4"
 
 type Handler struct {
-	state   *collector.State
-	version string
-	targets []config.TargetConfig
+	state          *collector.State
+	version        string
+	targets        []config.TargetConfig
+	downloadProbes []config.DownloadProbeConfig
 }
 
 func New(state *collector.State, version string, targets ...[]config.TargetConfig) *Handler {
@@ -33,6 +34,11 @@ func New(state *collector.State, version string, targets ...[]config.TargetConfi
 	}
 }
 
+func (h *Handler) WithDownloadProbes(downloadProbes []config.DownloadProbeConfig) *Handler {
+	h.downloadProbes = downloadProbes
+	return h
+}
+
 func (h *Handler) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", h.health)
@@ -43,6 +49,8 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /api/dns/series", h.dnsSeries)
 	mux.HandleFunc("GET /api/http/latest", h.httpLatest)
 	mux.HandleFunc("GET /api/http/series", h.httpSeries)
+	mux.HandleFunc("GET /api/download/latest", h.downloadLatest)
+	mux.HandleFunc("GET /api/download/series", h.downloadSeries)
 	mux.HandleFunc("GET /api/services/latest", h.servicesLatest)
 	mux.HandleFunc("GET /api/services/series", h.servicesSeries)
 	mux.HandleFunc("GET /api/services/summary", h.servicesSummary)
@@ -72,8 +80,11 @@ func (h *Handler) capabilities(w http.ResponseWriter, r *http.Request) {
 			"ping":                  true,
 			"dns":                   true,
 			"http":                  true,
+			"download":              true,
+			"download_series":       true,
 			"services":              true,
 			"charts":                true,
+			"charts_download":       true,
 			"charts_catalog":        true,
 			"charts_overview":       true,
 			"monitoring_status":     true,
@@ -85,9 +96,10 @@ func (h *Handler) capabilities(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) latest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ping": h.state.LatestByType("ping"),
-		"dns":  h.state.LatestByType("dns"),
-		"http": h.state.LatestByType("http"),
+		"ping":     h.state.LatestByType("ping"),
+		"dns":      h.state.LatestByType("dns"),
+		"http":     h.state.LatestByType("http"),
+		"download": h.state.LatestByType("download"),
 	})
 }
 
@@ -119,6 +131,16 @@ func (h *Handler) httpLatest(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) httpSeries(w http.ResponseWriter, r *http.Request) {
 	h.series(w, r, "http")
+}
+
+func (h *Handler) downloadLatest(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"samples": h.state.LatestByType("download"),
+	})
+}
+
+func (h *Handler) downloadSeries(w http.ResponseWriter, r *http.Request) {
+	h.series(w, r, "download")
 }
 
 func (h *Handler) servicesLatest(w http.ResponseWriter, r *http.Request) {
@@ -251,9 +273,9 @@ func (h *Handler) series(w http.ResponseWriter, r *http.Request, sampleType stri
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"name":    name,
-		"range":   rangeValue,
-		"samples": h.state.SeriesByType(sampleType, name, time.Now().Add(-duration)),
+		"name":                        name,
+		"range":                       rangeValue,
+		seriesResponseKey(sampleType): h.state.SeriesByType(sampleType, name, time.Now().Add(-duration)),
 	})
 }
 
@@ -275,6 +297,7 @@ func (h *Handler) monitoringThresholds(w http.ResponseWriter, r *http.Request) {
 		"http": map[string]any{
 			"total_ms": map[string]float64{"warning": 3000, "critical": 5000},
 		},
+		"download": downloadThresholdsResponse(),
 		"service": map[string]any{
 			"ok_rate_percent": map[string]float64{"warning": 95, "critical": 90},
 		},
@@ -531,6 +554,8 @@ func sampleStatus(sample model.Sample) (string, string) {
 		return dnsStatus(sample)
 	case "http":
 		return httpStatus(sample)
+	case "download":
+		return downloadStatus(sample)
 	}
 
 	rtt := 0.0
@@ -614,6 +639,48 @@ func httpStatus(sample model.Sample) (string, string) {
 	return "ok", message
 }
 
+type downloadThreshold struct {
+	WarningMbps  float64
+	CriticalMbps float64
+}
+
+var downloadMbpsThresholds = map[string]downloadThreshold{
+	"r2_1mb":  {WarningMbps: 5, CriticalMbps: 1},
+	"r2_10mb": {WarningMbps: 10, CriticalMbps: 3},
+}
+
+func downloadStatus(sample model.Sample) (string, string) {
+	if sample.Error != "" || sample.OK != nil && !*sample.OK {
+		return "warning", "download " + sample.Name + " failure"
+	}
+	if sample.Mbps == nil {
+		return "ok", "download " + sample.Name
+	}
+	message := fmt.Sprintf("download %s %.1fMbps", sample.Name, *sample.Mbps)
+	threshold, ok := downloadMbpsThresholds[sample.Name]
+	if !ok {
+		return "ok", message
+	}
+	if *sample.Mbps < threshold.CriticalMbps {
+		return "critical", message
+	}
+	if *sample.Mbps < threshold.WarningMbps {
+		return "warning", message
+	}
+	return "ok", message
+}
+
+func downloadThresholdsResponse() map[string]map[string]float64 {
+	result := make(map[string]map[string]float64, len(downloadMbpsThresholds))
+	for name, threshold := range downloadMbpsThresholds {
+		result[name+"_mbps"] = map[string]float64{
+			"warning":  threshold.WarningMbps,
+			"critical": threshold.CriticalMbps,
+		}
+	}
+	return result
+}
+
 func sortSamplesByName(samples []model.Sample) {
 	sort.SliceStable(samples, func(i, j int) bool {
 		return samples[i].Name < samples[j].Name
@@ -673,6 +740,13 @@ func titleForLevel(level string) string {
 	default:
 		return "NET OK"
 	}
+}
+
+func seriesResponseKey(sampleType string) string {
+	if sampleType == "download" {
+		return "points"
+	}
+	return "samples"
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {

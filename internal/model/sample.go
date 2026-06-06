@@ -35,4 +35,9 @@ type Sample struct {
 	ContentLength     *int64   `json:"content_length,omitempty"`
 	ContentLengthRead *int64   `json:"content_length_read,omitempty"`
 	BodyTruncated     *bool    `json:"body_truncated,omitempty"`
+
+	ExpectedBytes   *int64   `json:"expected_bytes,omitempty"`
+	DownloadedBytes *int64   `json:"downloaded_bytes,omitempty"`
+	BytesPerSec     *float64 `json:"bytes_per_sec,omitempty"`
+	Mbps            *float64 `json:"mbps,omitempty"`
 }

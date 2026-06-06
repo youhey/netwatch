@@ -12,6 +12,24 @@
   "http_timeout_seconds": 10,
   "http_disable_keepalive": true,
   "http_max_body_bytes": 262144,
+  "download_probes": [
+    {
+      "name": "r2_1mb",
+      "url": "https://pub-66e2ade26de745138962434a04cb1a46.r2.dev/netwatch-1mb.bin",
+      "expected_bytes": 1048576,
+      "interval_seconds": 600,
+      "timeout_seconds": 20,
+      "enabled": true
+    },
+    {
+      "name": "r2_10mb",
+      "url": "https://pub-66e2ade26de745138962434a04cb1a46.r2.dev/netwatch-10mb.bin",
+      "expected_bytes": 10485760,
+      "interval_seconds": 3600,
+      "timeout_seconds": 60,
+      "enabled": true
+    }
+  ],
   "targets": [
     {
       "name": "gateway",

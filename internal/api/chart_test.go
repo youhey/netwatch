@@ -143,6 +143,46 @@ func TestAggregateServices(t *testing.T) {
 	}
 }
 
+func TestAggregateDownload(t *testing.T) {
+	base := time.Date(2026, 6, 6, 0, 0, 0, 0, time.UTC)
+	ok := true
+	failed := false
+	samples := []model.Sample{
+		{Timestamp: base, OK: &ok, Mbps: floatPtr(10)},
+		{Timestamp: base.Add(time.Minute), OK: &ok, Mbps: floatPtr(20)},
+		{Timestamp: base.Add(2 * time.Minute), OK: &failed, Error: "timeout"},
+	}
+
+	points := aggregateDownload(samples, 5*time.Minute)
+	if len(points) != 1 {
+		t.Fatalf("len(points) = %d, want 1", len(points))
+	}
+	point := points[0]
+	if point.SampleCount != 3 || point.FailureCount != 1 || point.TimeoutCount != 1 {
+		t.Fatalf("point = %+v, want download counts", point)
+	}
+	if point.AvgMbps == nil || *point.AvgMbps != 15 || point.MinMbps == nil || *point.MinMbps != 10 || point.MaxMbps == nil || *point.MaxMbps != 20 {
+		t.Fatalf("point = %+v, want download Mbps aggregate", point)
+	}
+}
+
+func TestAggregateDownloadFailureOnlyOmitsMbps(t *testing.T) {
+	base := time.Date(2026, 6, 6, 0, 0, 0, 0, time.UTC)
+	failed := false
+	samples := []model.Sample{
+		{Timestamp: base, OK: &failed, Error: "http status 404"},
+	}
+
+	points := aggregateDownload(samples, 5*time.Minute)
+	if len(points) != 1 {
+		t.Fatalf("len(points) = %d, want 1", len(points))
+	}
+	point := points[0]
+	if point.SampleCount != 1 || point.FailureCount != 1 || point.AvgMbps != nil || point.MinMbps != nil || point.MaxMbps != nil {
+		t.Fatalf("point = %+v, want failure-only download aggregate", point)
+	}
+}
+
 func TestThinPoints(t *testing.T) {
 	points := make([]chartPoint, 20)
 	for i := range points {

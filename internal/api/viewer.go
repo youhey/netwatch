@@ -15,13 +15,14 @@ var (
 )
 
 type catalogTarget struct {
-	Name     string `json:"name"`
-	Target   string `json:"target,omitempty"`
-	Hostname string `json:"hostname,omitempty"`
-	Group    string `json:"group,omitempty"`
-	Category string `json:"category,omitempty"`
-	URL      string `json:"url,omitempty"`
-	Label    string `json:"label"`
+	Name          string `json:"name"`
+	Target        string `json:"target,omitempty"`
+	Hostname      string `json:"hostname,omitempty"`
+	Group         string `json:"group,omitempty"`
+	Category      string `json:"category,omitempty"`
+	URL           string `json:"url,omitempty"`
+	ExpectedBytes *int64 `json:"expected_bytes,omitempty"`
+	Label         string `json:"label"`
 }
 
 type catalogServiceGroup struct {
@@ -53,6 +54,7 @@ type chartsOverviewResponse struct {
 	MaxPoints        int             `json:"max_points"`
 	Ping             []chartResponse `json:"ping"`
 	HTTP             []chartResponse `json:"http"`
+	Download         []chartResponse `json:"download"`
 	ServiceGroups    []chartResponse `json:"service_groups"`
 }
 
@@ -60,6 +62,7 @@ func (h *Handler) chartsCatalog(w http.ResponseWriter, r *http.Request) {
 	pingTargets := make([]catalogTarget, 0)
 	dnsTargets := make([]catalogTarget, 0)
 	httpTargets := make([]catalogTarget, 0)
+	downloadTargets := make([]catalogTarget, 0, len(h.downloadProbes))
 	groups := make(map[string]catalogServiceGroup)
 
 	for _, target := range h.targets {
@@ -98,6 +101,15 @@ func (h *Handler) chartsCatalog(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	for _, probe := range h.downloadProbes {
+		expectedBytes := probe.ExpectedBytes
+		downloadTargets = append(downloadTargets, catalogTarget{
+			Name:          probe.Name,
+			URL:           probe.URL,
+			ExpectedBytes: &expectedBytes,
+			Label:         labelForDownloadProbe(probe),
+		})
+	}
 
 	serviceGroups := make([]catalogServiceGroup, 0, len(groups))
 	for _, group := range groups {
@@ -106,6 +118,7 @@ func (h *Handler) chartsCatalog(w http.ResponseWriter, r *http.Request) {
 	sortCatalogTargets(pingTargets)
 	sortCatalogTargets(dnsTargets)
 	sortCatalogTargets(httpTargets)
+	sortCatalogTargets(downloadTargets)
 	sort.SliceStable(serviceGroups, func(i, j int) bool {
 		return serviceGroups[i].Group < serviceGroups[j].Group
 	})
@@ -118,6 +131,7 @@ func (h *Handler) chartsCatalog(w http.ResponseWriter, r *http.Request) {
 		"ping":           pingTargets,
 		"dns":            dnsTargets,
 		"http":           httpTargets,
+		"download":       downloadTargets,
 		"service_groups": serviceGroups,
 	})
 }
@@ -175,6 +189,13 @@ func (h *Handler) chartsOverview(w http.ResponseWriter, r *http.Request) {
 		}
 		response.HTTP = append(response.HTTP, buildChartResponse("http", rangeValue, bucketValue, bucket, maxPoints, start, end, samples))
 	}
+	for _, probe := range h.downloadProbes {
+		samples := h.state.SeriesByType("download", probe.Name, start)
+		if len(samples) == 0 {
+			continue
+		}
+		response.Download = append(response.Download, buildChartResponse("download", rangeValue, bucketValue, bucket, maxPoints, start, end, samples))
+	}
 	for _, group := range []string{"youtube", "steam", "pcgame", "psn", "aws", "azure"} {
 		samples := filterIgnoredServiceTargets(h.state.ServiceSeries(group, "", start))
 		if len(samples) == 0 {
@@ -208,15 +229,27 @@ func labelForTarget(target config.TargetConfig) string {
 	return labelForName(target.Name)
 }
 
+func labelForDownloadProbe(probe config.DownloadProbeConfig) string {
+	if strings.TrimSpace(probe.Label) != "" {
+		return probe.Label
+	}
+	return labelForName(probe.Name)
+}
+
 func labelForName(value string) string {
 	parts := strings.Fields(strings.ReplaceAll(value, "_", " "))
 	for i, part := range parts {
 		if part == "" {
 			continue
 		}
-		switch strings.ToLower(part) {
-		case "dns", "http", "psn", "aws":
+		lower := strings.ToLower(part)
+		switch lower {
+		case "dns", "http", "psn", "aws", "r2":
 			parts[i] = strings.ToUpper(part)
+			continue
+		}
+		if strings.HasSuffix(lower, "mb") && len(part) > 2 {
+			parts[i] = part[:len(part)-2] + "MB"
 			continue
 		}
 		parts[i] = strings.ToUpper(part[:1]) + part[1:]

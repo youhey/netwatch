@@ -53,8 +53,8 @@ func TestLatestGroupsSamplesByType(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("Unmarshal() error = %v", err)
 	}
-	if len(body["ping"]) != 1 || len(body["dns"]) != 1 || len(body["http"]) != 4 {
-		t.Fatalf("counts = ping:%d dns:%d http:%d, want ping:1 dns:1 http:4", len(body["ping"]), len(body["dns"]), len(body["http"]))
+	if len(body["ping"]) != 1 || len(body["dns"]) != 1 || len(body["http"]) != 4 || len(body["download"]) != 1 {
+		t.Fatalf("counts = ping:%d dns:%d http:%d download:%d, want ping:1 dns:1 http:4 download:1", len(body["ping"]), len(body["dns"]), len(body["http"]), len(body["download"]))
 	}
 }
 
@@ -76,6 +76,16 @@ func TestHTTPLatest(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 
 	assertSampleCount(t, rec, 4)
+}
+
+func TestDownloadLatest(t *testing.T) {
+	handler := newTestHandler()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/download/latest", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assertSampleCount(t, rec, 1)
 }
 
 func TestServicesLatest(t *testing.T) {
@@ -153,6 +163,50 @@ func TestHTTPSeriesWithBucketReturnsChart(t *testing.T) {
 	}
 	if body.Type != "http" || body.Name != "youtube_home" || len(body.Points) == 0 {
 		t.Fatalf("body = %+v, want http chart response", body)
+	}
+}
+
+func TestDownloadSeriesReturnsPoints(t *testing.T) {
+	handler := newTestHandler()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/download/series?name=r2_1mb&range=24h", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	var body struct {
+		Name   string         `json:"name"`
+		Range  string         `json:"range"`
+		Points []model.Sample `json:"points"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if body.Name != "r2_1mb" || body.Range != "24h" || len(body.Points) != 1 {
+		t.Fatalf("body = %+v, want download points", body)
+	}
+}
+
+func TestDownloadSeriesWithBucketReturnsChart(t *testing.T) {
+	handler := newTestHandler()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/download/series?name=r2_1mb&range=24h&bucket=5m", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	var body chartResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if body.Type != "download" || body.Name != "r2_1mb" || len(body.Points) != 1 || body.Points[0].AvgMbps == nil {
+		t.Fatalf("body = %+v, want download chart response", body)
 	}
 }
 
@@ -240,16 +294,20 @@ func TestChartsCatalog(t *testing.T) {
 		Ping          []catalogTarget       `json:"ping"`
 		DNS           []catalogTarget       `json:"dns"`
 		HTTP          []catalogTarget       `json:"http"`
+		Download      []catalogTarget       `json:"download"`
 		ServiceGroups []catalogServiceGroup `json:"service_groups"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("Unmarshal() error = %v", err)
 	}
-	if len(body.Ping) != 1 || len(body.DNS) != 1 || len(body.HTTP) != 2 || len(body.ServiceGroups) != 2 {
-		t.Fatalf("catalog counts = ping:%d dns:%d http:%d groups:%d", len(body.Ping), len(body.DNS), len(body.HTTP), len(body.ServiceGroups))
+	if len(body.Ping) != 1 || len(body.DNS) != 1 || len(body.HTTP) != 2 || len(body.Download) != 2 || len(body.ServiceGroups) != 2 {
+		t.Fatalf("catalog counts = ping:%d dns:%d http:%d download:%d groups:%d", len(body.Ping), len(body.DNS), len(body.HTTP), len(body.Download), len(body.ServiceGroups))
 	}
 	if body.Ping[0].Label != "Cloudflare DNS" {
 		t.Fatalf("Label = %q, want Cloudflare DNS", body.Ping[0].Label)
+	}
+	if body.Download[0].Name != "r2_10mb" || body.Download[0].ExpectedBytes == nil || *body.Download[0].ExpectedBytes != 10485760 {
+		t.Fatalf("download catalog = %+v, want r2_10mb expected bytes", body.Download)
 	}
 }
 
@@ -271,8 +329,8 @@ func TestChartsOverview(t *testing.T) {
 	if body.Range != "24h" || body.Bucket != "5m" || body.BucketSeconds != 300 || body.MaxPoints != 10 {
 		t.Fatalf("overview metadata = %+v, want range/bucket/max_points", body)
 	}
-	if len(body.Ping) != 1 || len(body.HTTP) != 2 || len(body.ServiceGroups) != 2 {
-		t.Fatalf("overview counts = ping:%d http:%d groups:%d", len(body.Ping), len(body.HTTP), len(body.ServiceGroups))
+	if len(body.Ping) != 1 || len(body.HTTP) != 2 || len(body.Download) != 1 || len(body.ServiceGroups) != 2 {
+		t.Fatalf("overview counts = ping:%d http:%d download:%d groups:%d", len(body.Ping), len(body.HTTP), len(body.Download), len(body.ServiceGroups))
 	}
 }
 
@@ -291,7 +349,7 @@ func TestMonitoringThresholds(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("Unmarshal() error = %v", err)
 	}
-	if body["ping"] == nil || body["dns"] == nil || body["http"] == nil || body["service"] == nil {
+	if body["ping"] == nil || body["dns"] == nil || body["http"] == nil || body["download"] == nil || body["service"] == nil {
 		t.Fatalf("threshold body = %+v, want threshold groups", body)
 	}
 }
@@ -310,12 +368,13 @@ func TestCapabilities(t *testing.T) {
 	var body struct {
 		Service    string               `json:"service"`
 		APIVersion string               `json:"api_version"`
+		Features   map[string]bool      `json:"features"`
 		Chart      chartSupportResponse `json:"chart"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("Unmarshal() error = %v", err)
 	}
-	if body.Service != "netwatch" || body.APIVersion != apiVersion || len(body.Chart.Ranges) == 0 || body.Chart.MaxPoints["default"] != defaultMaxPoints {
+	if body.Service != "netwatch" || body.APIVersion != apiVersion || !body.Features["download"] || !body.Features["download_series"] || !body.Features["charts_download"] || len(body.Chart.Ranges) == 0 || body.Chart.MaxPoints["default"] != defaultMaxPoints {
 		t.Fatalf("capabilities = %+v, want service/api/chart support", body)
 	}
 }
@@ -392,6 +451,28 @@ func TestMonitoringStatusWarnsOnHTTPFailure(t *testing.T) {
 	}
 }
 
+func TestMonitoringStatusWarnsOnDownloadSlow(t *testing.T) {
+	state := collector.NewState()
+	ok := true
+	state.Load([]model.Sample{
+		{Timestamp: time.Now(), Type: "ping", Name: "cloudflare_dns", OK: &ok, LossPercent: floatPtr(0), RTTAvgMs: floatPtr(10)},
+		{Timestamp: time.Now(), Type: "download", Name: "r2_1mb", URL: "https://example.com/netwatch-1mb.bin", OK: &ok, Mbps: floatPtr(3.2)},
+	})
+	handler := New(state, "test").Routes()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/monitoring/status", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	var body monitoringStatusResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if !body.Alert || body.Level != "warning" || body.Message != "download r2_1mb 3.2Mbps" {
+		t.Fatalf("body = %+v, want download warning", body)
+	}
+}
+
 func TestMonitoringStatusOK(t *testing.T) {
 	state := collector.NewState()
 	ok := true
@@ -442,6 +523,8 @@ func newTestHandler() http.Handler {
 	ok := true
 	failed := false
 	status := http.StatusOK
+	expectedBytes := int64(1048576)
+	downloadedBytes := int64(1048576)
 	old := time.Now().Add(-2 * time.Hour)
 	now := time.Now()
 	state.Load([]model.Sample{
@@ -452,6 +535,7 @@ func newTestHandler() http.Handler {
 		{Timestamp: now, Type: "http", Group: "youtube", Category: "service", Name: "youtube_home", URL: "https://www.youtube.com/", Method: "GET", OK: &ok, HTTPStatus: &status, TotalMs: floatPtr(800), DNSMs: floatPtr(20), ConnectMs: floatPtr(30), TLSMs: floatPtr(40), TTFBMs: floatPtr(50)},
 		{Timestamp: now, Type: "http", Group: "steam", Category: "service", Name: "steam_store", URL: "https://store.steampowered.com/", Method: "GET", OK: &failed, TotalMs: floatPtr(0), Error: "timeout"},
 		{Timestamp: now, Type: "http", Group: "pcgame", Category: "game", Name: "sf6_buckler_info", URL: "https://www.streetfighter.com/6/buckler/en/information/all/1", Method: "GET", OK: &failed, HTTPStatus: intPtr(http.StatusForbidden), TotalMs: floatPtr(0)},
+		{Timestamp: now, Type: "download", Name: "r2_1mb", URL: "https://pub-66e2ade26de745138962434a04cb1a46.r2.dev/netwatch-1mb.bin", OK: &ok, ExpectedBytes: &expectedBytes, DownloadedBytes: &downloadedBytes, DurationMs: floatPtr(1000), BytesPerSec: floatPtr(1048576), Mbps: floatPtr(8.388608)},
 	})
 	targets := []config.TargetConfig{
 		{Name: "cloudflare_dns", Type: "ping", Target: "1.1.1.1"},
@@ -460,7 +544,11 @@ func newTestHandler() http.Handler {
 		{Name: "steam_store", Type: "http", Group: "steam", Category: "service", URL: "https://store.steampowered.com/"},
 		{Name: "sf6_buckler_info", Type: "http", Group: "pcgame", Category: "game", URL: "https://www.streetfighter.com/6/buckler/en/information/all/1"},
 	}
-	return New(state, "test", targets).Routes()
+	downloadProbes := []config.DownloadProbeConfig{
+		{Name: "r2_1mb", URL: "https://pub-66e2ade26de745138962434a04cb1a46.r2.dev/netwatch-1mb.bin", ExpectedBytes: 1048576, IntervalSeconds: 600, TimeoutSeconds: 20, Enabled: true},
+		{Name: "r2_10mb", URL: "https://pub-66e2ade26de745138962434a04cb1a46.r2.dev/netwatch-10mb.bin", ExpectedBytes: 10485760, IntervalSeconds: 3600, TimeoutSeconds: 60, Enabled: true},
+	}
+	return New(state, "test", targets).WithDownloadProbes(downloadProbes).Routes()
 }
 
 func assertSampleCount(t *testing.T, rec *httptest.ResponseRecorder, want int) {

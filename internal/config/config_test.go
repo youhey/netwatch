@@ -101,6 +101,70 @@ func TestLoadPhase35Settings(t *testing.T) {
 	}
 }
 
+func TestLoadDownloadProbes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "netwatch.json")
+	content := `{
+  "listen_addr": "127.0.0.1:8080",
+  "data_dir": "/var/lib/netwatch",
+  "data_file_pattern": "samples-%Y-%m-%d.jsonl",
+  "retention_days": 7,
+  "download_probes": [
+    {
+      "name": "r2_1mb",
+      "url": "https://pub-66e2ade26de745138962434a04cb1a46.r2.dev/netwatch-1mb.bin",
+      "expected_bytes": 1048576,
+      "interval_seconds": 600,
+      "timeout_seconds": 20,
+      "enabled": true
+    },
+    {
+      "name": "disabled",
+      "enabled": false
+    }
+  ],
+  "targets": [
+    {
+      "name": "home",
+      "type": "http",
+      "url": "https://example.com/"
+    }
+  ]
+}`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(cfg.DownloadProbes) != 2 {
+		t.Fatalf("len(DownloadProbes) = %d, want 2", len(cfg.DownloadProbes))
+	}
+	probes := cfg.EnabledDownloadProbes()
+	if len(probes) != 1 {
+		t.Fatalf("len(EnabledDownloadProbes) = %d, want 1", len(probes))
+	}
+	probe := probes[0]
+	if probe.Name != "r2_1mb" || probe.ExpectedBytes != 1048576 || probe.IntervalSeconds != 600 || probe.TimeoutSeconds != 20 {
+		t.Fatalf("probe = %+v, want download settings loaded", probe)
+	}
+}
+
+func TestValidateDownloadProbeURL(t *testing.T) {
+	cfg := Default()
+	cfg.Targets = []TargetConfig{
+		{Name: "home", Type: "http", URL: "https://example.com/"},
+	}
+	cfg.DownloadProbes = []DownloadProbeConfig{
+		{Name: "r2_1mb", URL: "ftp://example.com/file.bin", ExpectedBytes: 1, IntervalSeconds: 600, TimeoutSeconds: 20, Enabled: true},
+	}
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() error = nil, want error")
+	}
+}
+
 func TestValidateLegacyDataPath(t *testing.T) {
 	cfg := Default()
 	cfg.DataPath = "/var/lib/netwatch/samples.jsonl"
@@ -177,6 +241,9 @@ func TestLoadExampleConfig(t *testing.T) {
 
 	if len(cfg.Targets) < 10 {
 		t.Fatalf("len(Targets) = %d, want Phase 3 service targets", len(cfg.Targets))
+	}
+	if len(cfg.EnabledDownloadProbes()) != 2 {
+		t.Fatalf("len(EnabledDownloadProbes) = %d, want Phase 5 download probes", len(cfg.EnabledDownloadProbes()))
 	}
 	found := false
 	foundSF6 := false

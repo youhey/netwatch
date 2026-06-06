@@ -10,21 +10,22 @@ import (
 )
 
 type Config struct {
-	ListenAddr           string         `json:"listen_addr"`
-	DataPath             string         `json:"data_path"`
-	DataDir              string         `json:"data_dir"`
-	DataFilePattern      string         `json:"data_file_pattern"`
-	RetentionDays        int            `json:"retention_days"`
-	PingIntervalSeconds  int            `json:"ping_interval_seconds"`
-	PingCount            int            `json:"ping_count"`
-	PingTimeoutSeconds   int            `json:"ping_timeout_seconds"`
-	DNSIntervalSeconds   int            `json:"dns_interval_seconds"`
-	DNSTimeoutSeconds    int            `json:"dns_timeout_seconds"`
-	HTTPIntervalSeconds  int            `json:"http_interval_seconds"`
-	HTTPTimeoutSeconds   int            `json:"http_timeout_seconds"`
-	HTTPDisableKeepAlive bool           `json:"http_disable_keepalive"`
-	HTTPMaxBodyBytes     int64          `json:"http_max_body_bytes"`
-	Targets              []TargetConfig `json:"targets"`
+	ListenAddr           string                `json:"listen_addr"`
+	DataPath             string                `json:"data_path"`
+	DataDir              string                `json:"data_dir"`
+	DataFilePattern      string                `json:"data_file_pattern"`
+	RetentionDays        int                   `json:"retention_days"`
+	PingIntervalSeconds  int                   `json:"ping_interval_seconds"`
+	PingCount            int                   `json:"ping_count"`
+	PingTimeoutSeconds   int                   `json:"ping_timeout_seconds"`
+	DNSIntervalSeconds   int                   `json:"dns_interval_seconds"`
+	DNSTimeoutSeconds    int                   `json:"dns_timeout_seconds"`
+	HTTPIntervalSeconds  int                   `json:"http_interval_seconds"`
+	HTTPTimeoutSeconds   int                   `json:"http_timeout_seconds"`
+	HTTPDisableKeepAlive bool                  `json:"http_disable_keepalive"`
+	HTTPMaxBodyBytes     int64                 `json:"http_max_body_bytes"`
+	DownloadProbes       []DownloadProbeConfig `json:"download_probes"`
+	Targets              []TargetConfig        `json:"targets"`
 }
 
 type TargetConfig struct {
@@ -39,6 +40,16 @@ type TargetConfig struct {
 	Method          string `json:"method"`
 	IntervalSeconds int    `json:"interval_seconds"`
 	TimeoutSeconds  int    `json:"timeout_seconds"`
+}
+
+type DownloadProbeConfig struct {
+	Name            string `json:"name"`
+	Label           string `json:"label"`
+	URL             string `json:"url"`
+	ExpectedBytes   int64  `json:"expected_bytes"`
+	IntervalSeconds int    `json:"interval_seconds"`
+	TimeoutSeconds  int    `json:"timeout_seconds"`
+	Enabled         bool   `json:"enabled"`
 }
 
 func Load(path string) (Config, error) {
@@ -117,7 +128,7 @@ func (c Config) Validate() error {
 		return errors.New("targets must not be empty")
 	}
 
-	names := make(map[string]struct{}, len(c.Targets))
+	names := make(map[string]struct{}, len(c.Targets)+len(c.DownloadProbes))
 	for i, target := range c.Targets {
 		if strings.TrimSpace(target.Name) == "" {
 			return fmt.Errorf("targets[%d].name is required", i)
@@ -157,6 +168,34 @@ func (c Config) Validate() error {
 		}
 		if target.TimeoutSeconds < 0 {
 			return fmt.Errorf("targets[%d].timeout_seconds must be greater than or equal to 0", i)
+		}
+	}
+
+	for i, downloadProbe := range c.DownloadProbes {
+		if !downloadProbe.Enabled {
+			continue
+		}
+		if strings.TrimSpace(downloadProbe.Name) == "" {
+			return fmt.Errorf("download_probes[%d].name is required", i)
+		}
+		if _, ok := names[downloadProbe.Name]; ok {
+			return fmt.Errorf("duplicate target name: %s", downloadProbe.Name)
+		}
+		names[downloadProbe.Name] = struct{}{}
+		if strings.TrimSpace(downloadProbe.URL) == "" {
+			return fmt.Errorf("download_probes[%d].url is required", i)
+		}
+		if err := validateHTTPURL(downloadProbe.URL); err != nil {
+			return fmt.Errorf("download_probes[%d].url is invalid: %w", i, err)
+		}
+		if downloadProbe.ExpectedBytes < 0 {
+			return fmt.Errorf("download_probes[%d].expected_bytes must be greater than or equal to 0", i)
+		}
+		if downloadProbe.IntervalSeconds <= 0 {
+			return fmt.Errorf("download_probes[%d].interval_seconds must be greater than 0", i)
+		}
+		if downloadProbe.TimeoutSeconds <= 0 {
+			return fmt.Errorf("download_probes[%d].timeout_seconds must be greater than 0", i)
 		}
 	}
 
@@ -207,4 +246,15 @@ func (c Config) TimeoutSeconds(target TargetConfig) int {
 	default:
 		return c.PingTimeoutSeconds
 	}
+}
+
+func (c Config) EnabledDownloadProbes() []DownloadProbeConfig {
+	probes := make([]DownloadProbeConfig, 0, len(c.DownloadProbes))
+	for _, probe := range c.DownloadProbes {
+		if !probe.Enabled {
+			continue
+		}
+		probes = append(probes, probe)
+	}
+	return probes
 }

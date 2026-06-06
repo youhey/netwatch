@@ -45,12 +45,13 @@ func main() {
 	defer stop()
 
 	httpProbe := probe.NewHTTP(cfg.HTTPDisableKeepAlive, cfg.HTTPMaxBodyBytes)
-	c := collector.New(cfg, probe.Fping{}, probe.DNS{}, httpProbe, jsonl, state)
+	downloadProbe := probe.NewDownload()
+	c := collector.New(cfg, probe.Fping{}, probe.DNS{}, httpProbe, downloadProbe, jsonl, state)
 	go c.Run(rootCtx)
 
 	server := &http.Server{
 		Addr:              cfg.ListenAddr,
-		Handler:           api.New(state, version, cfg.Targets).Routes(),
+		Handler:           api.New(state, version, cfg.Targets).WithDownloadProbes(cfg.EnabledDownloadProbes()).Routes(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

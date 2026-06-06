@@ -26,31 +26,41 @@ type HTTPProbe interface {
 	Get(ctx context.Context, url string) (probe.HTTPResult, error)
 }
 
-type Collector struct {
-	cfg     config.Config
-	ping    PingProbe
-	dns     DNSProbe
-	http    HTTPProbe
-	storage Storage
-	state   *State
+type DownloadProbe interface {
+	Get(ctx context.Context, url string, expectedBytes int64) (probe.DownloadResult, error)
 }
 
-func New(cfg config.Config, ping PingProbe, dns DNSProbe, http HTTPProbe, storage Storage, state *State) *Collector {
+type Collector struct {
+	cfg      config.Config
+	ping     PingProbe
+	dns      DNSProbe
+	http     HTTPProbe
+	download DownloadProbe
+	storage  Storage
+	state    *State
+}
+
+func New(cfg config.Config, ping PingProbe, dns DNSProbe, http HTTPProbe, download DownloadProbe, storage Storage, state *State) *Collector {
 	return &Collector{
-		cfg:     cfg,
-		ping:    ping,
-		dns:     dns,
-		http:    http,
-		storage: storage,
-		state:   state,
+		cfg:      cfg,
+		ping:     ping,
+		dns:      dns,
+		http:     http,
+		download: download,
+		storage:  storage,
+		state:    state,
 	}
 }
 
 func (c *Collector) Run(ctx context.Context) {
-	nextRuns := make(map[string]time.Time, len(c.cfg.Targets))
+	downloadProbes := c.cfg.EnabledDownloadProbes()
+	nextRuns := make(map[string]time.Time, len(c.cfg.Targets)+len(downloadProbes))
 	now := time.Now()
 	for _, target := range c.cfg.Targets {
-		nextRuns[target.Name] = now
+		nextRuns["target:"+target.Name] = now
+	}
+	for _, downloadProbe := range downloadProbes {
+		nextRuns["download:"+downloadProbe.Name] = now
 	}
 
 	ticker := time.NewTicker(time.Second)
@@ -70,17 +80,36 @@ func (c *Collector) Run(ctx context.Context) {
 func (c *Collector) collectDue(ctx context.Context, nextRuns map[string]time.Time) {
 	now := time.Now()
 	for _, target := range c.cfg.Targets {
-		if now.Before(nextRuns[target.Name]) {
+		key := "target:" + target.Name
+		if now.Before(nextRuns[key]) {
 			continue
 		}
 
 		c.collectTarget(ctx, target)
-		nextRuns[target.Name] = now.Add(time.Duration(c.cfg.IntervalSeconds(target)) * time.Second)
+		nextRuns[key] = now.Add(time.Duration(c.cfg.IntervalSeconds(target)) * time.Second)
+	}
+	for _, downloadProbe := range c.cfg.EnabledDownloadProbes() {
+		key := "download:" + downloadProbe.Name
+		if now.Before(nextRuns[key]) {
+			continue
+		}
+
+		c.collectDownload(ctx, downloadProbe)
+		nextRuns[key] = now.Add(time.Duration(downloadProbe.IntervalSeconds) * time.Second)
 	}
 }
 
 func (c *Collector) collectTarget(ctx context.Context, target config.TargetConfig) {
 	sample := c.measure(ctx, target)
+	if err := c.storage.Append(sample); err != nil {
+		log.Printf("append sample failed: type=%s name=%s error=%v", sample.Type, sample.Name, err)
+		return
+	}
+	c.state.Add(sample)
+}
+
+func (c *Collector) collectDownload(ctx context.Context, downloadProbe config.DownloadProbeConfig) {
+	sample := c.measureDownload(ctx, downloadProbe)
 	if err := c.storage.Append(sample); err != nil {
 		log.Printf("append sample failed: type=%s name=%s error=%v", sample.Type, sample.Name, err)
 		return
@@ -209,6 +238,45 @@ func (c *Collector) measureHTTP(ctx context.Context, target config.TargetConfig)
 	return sample
 }
 
+func (c *Collector) measureDownload(ctx context.Context, downloadProbe config.DownloadProbeConfig) model.Sample {
+	sample := model.Sample{
+		Timestamp:     time.Now().Local(),
+		Type:          "download",
+		Name:          downloadProbe.Name,
+		URL:           downloadProbe.URL,
+		ExpectedBytes: positiveInt64Ptr(downloadProbe.ExpectedBytes),
+	}
+
+	timeout := time.Duration(downloadProbe.TimeoutSeconds) * time.Second
+	downloadCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	result, err := c.download.Get(downloadCtx, downloadProbe.URL, downloadProbe.ExpectedBytes)
+	if err != nil {
+		sample.Error = err.Error()
+	}
+
+	sample.OK = boolPtr(result.OK && err == nil)
+	sample.HTTPStatus = result.HTTPStatus
+	sample.DownloadedBytes = int64Ptr(result.DownloadedBytes)
+	sample.DurationMs = &result.DurationMs
+	sample.BytesPerSec = &result.BytesPerSec
+	sample.Mbps = &result.Mbps
+
+	return sample
+}
+
 func boolPtr(value bool) *bool {
+	return &value
+}
+
+func int64Ptr(value int64) *int64 {
+	return &value
+}
+
+func positiveInt64Ptr(value int64) *int64 {
+	if value <= 0 {
+		return nil
+	}
 	return &value
 }
