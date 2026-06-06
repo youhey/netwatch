@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/youhey/netwatch/internal/collector"
+	"github.com/youhey/netwatch/internal/config"
 	"github.com/youhey/netwatch/internal/model"
 )
 
@@ -199,6 +200,126 @@ func TestSeriesWithInvalidMaxPointsReturnsBadRequest(t *testing.T) {
 	}
 }
 
+func TestSeriesWithMissingTargetReturnsStructuredNotFound(t *testing.T) {
+	handler := newTestHandler()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/ping/series?name=missing&range=24h&bucket=5m", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+
+	var body struct {
+		Error struct {
+			Code  string `json:"code"`
+			Param string `json:"param"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if body.Error.Code != "target_not_found" || body.Error.Param != "name" {
+		t.Fatalf("error = %+v, want target_not_found/name", body.Error)
+	}
+}
+
+func TestChartsCatalog(t *testing.T) {
+	handler := newTestHandler()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/charts/catalog", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	var body struct {
+		Ping          []catalogTarget       `json:"ping"`
+		DNS           []catalogTarget       `json:"dns"`
+		HTTP          []catalogTarget       `json:"http"`
+		ServiceGroups []catalogServiceGroup `json:"service_groups"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if len(body.Ping) != 1 || len(body.DNS) != 1 || len(body.HTTP) != 2 || len(body.ServiceGroups) != 2 {
+		t.Fatalf("catalog counts = ping:%d dns:%d http:%d groups:%d", len(body.Ping), len(body.DNS), len(body.HTTP), len(body.ServiceGroups))
+	}
+	if body.Ping[0].Label != "Cloudflare DNS" {
+		t.Fatalf("Label = %q, want Cloudflare DNS", body.Ping[0].Label)
+	}
+}
+
+func TestChartsOverview(t *testing.T) {
+	handler := newTestHandler()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/charts/overview?range=24h&bucket=5m&max_points=10", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	var body chartsOverviewResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if body.Range != "24h" || body.Bucket != "5m" || body.BucketSeconds != 300 || body.MaxPoints != 10 {
+		t.Fatalf("overview metadata = %+v, want range/bucket/max_points", body)
+	}
+	if len(body.Ping) != 1 || len(body.HTTP) != 2 || len(body.ServiceGroups) != 2 {
+		t.Fatalf("overview counts = ping:%d http:%d groups:%d", len(body.Ping), len(body.HTTP), len(body.ServiceGroups))
+	}
+}
+
+func TestMonitoringThresholds(t *testing.T) {
+	handler := newTestHandler()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/monitoring/thresholds", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if body["ping"] == nil || body["dns"] == nil || body["http"] == nil || body["service"] == nil {
+		t.Fatalf("threshold body = %+v, want threshold groups", body)
+	}
+}
+
+func TestCapabilities(t *testing.T) {
+	handler := newTestHandler()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/capabilities", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	var body struct {
+		Service    string               `json:"service"`
+		APIVersion string               `json:"api_version"`
+		Chart      chartSupportResponse `json:"chart"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if body.Service != "netwatch" || body.APIVersion != apiVersion || len(body.Chart.Ranges) == 0 || body.Chart.MaxPoints["default"] != defaultMaxPoints {
+		t.Fatalf("capabilities = %+v, want service/api/chart support", body)
+	}
+}
+
 func TestServicesSeriesRejectsGroupAndName(t *testing.T) {
 	handler := newTestHandler()
 
@@ -332,7 +453,14 @@ func newTestHandler() http.Handler {
 		{Timestamp: now, Type: "http", Group: "steam", Category: "service", Name: "steam_store", URL: "https://store.steampowered.com/", Method: "GET", OK: &failed, TotalMs: floatPtr(0), Error: "timeout"},
 		{Timestamp: now, Type: "http", Group: "pcgame", Category: "game", Name: "sf6_buckler_info", URL: "https://www.streetfighter.com/6/buckler/en/information/all/1", Method: "GET", OK: &failed, HTTPStatus: intPtr(http.StatusForbidden), TotalMs: floatPtr(0)},
 	})
-	return New(state, "test").Routes()
+	targets := []config.TargetConfig{
+		{Name: "cloudflare_dns", Type: "ping", Target: "1.1.1.1"},
+		{Name: "lookup", Type: "dns", Hostname: "www.google.com"},
+		{Name: "youtube_home", Type: "http", Group: "youtube", Category: "service", URL: "https://www.youtube.com/"},
+		{Name: "steam_store", Type: "http", Group: "steam", Category: "service", URL: "https://store.steampowered.com/"},
+		{Name: "sf6_buckler_info", Type: "http", Group: "pcgame", Category: "game", URL: "https://www.streetfighter.com/6/buckler/en/information/all/1"},
+	}
+	return New(state, "test", targets).Routes()
 }
 
 func assertSampleCount(t *testing.T, rec *httptest.ResponseRecorder, want int) {

@@ -30,11 +30,20 @@ type chartPoint struct {
 	MaxTotalMs *float64 `json:"max_total_ms,omitempty"`
 	OKRate     *float64 `json:"ok_rate,omitempty"`
 
-	FailureCount int `json:"failure_count,omitempty"`
-	TimeoutCount int `json:"timeout_count,omitempty"`
+	FailureCount int `json:"failure_count"`
+	TimeoutCount int `json:"timeout_count"`
 }
 
 type chartResponse struct {
+	GeneratedAt      time.Time `json:"generated_at"`
+	ActualRangeStart time.Time `json:"actual_range_start"`
+	ActualRangeEnd   time.Time `json:"actual_range_end"`
+	Timezone         string    `json:"timezone"`
+	Range            string    `json:"range"`
+	Bucket           string    `json:"bucket"`
+	BucketSeconds    int       `json:"bucket_seconds"`
+	MaxPoints        int       `json:"max_points"`
+
 	Type     string       `json:"type"`
 	Name     string       `json:"name,omitempty"`
 	Target   string       `json:"target,omitempty"`
@@ -42,8 +51,6 @@ type chartResponse struct {
 	Group    string       `json:"group,omitempty"`
 	Category string       `json:"category,omitempty"`
 	URL      string       `json:"url,omitempty"`
-	Range    string       `json:"range"`
-	Bucket   string       `json:"bucket"`
 	Targets  []string     `json:"targets,omitempty"`
 	Points   []chartPoint `json:"points"`
 }
@@ -83,11 +90,17 @@ func parseMaxPoints(value string) (int, error) {
 	return maxPoints, nil
 }
 
-func buildChartResponse(sampleType, rangeValue, bucketValue string, bucket time.Duration, maxPoints int, samples []model.Sample) chartResponse {
+func buildChartResponse(sampleType, rangeValue, bucketValue string, bucket time.Duration, maxPoints int, start, end time.Time, samples []model.Sample) chartResponse {
 	response := chartResponse{
-		Type:   sampleType,
-		Range:  rangeValue,
-		Bucket: bucketValue,
+		GeneratedAt:      time.Now(),
+		ActualRangeStart: start,
+		ActualRangeEnd:   end,
+		Timezone:         time.Now().Location().String(),
+		Range:            rangeValue,
+		Bucket:           bucketValue,
+		BucketSeconds:    int(bucket.Seconds()),
+		MaxPoints:        maxPoints,
+		Type:             sampleType,
 	}
 	if len(samples) == 0 {
 		return response
@@ -113,12 +126,18 @@ func buildChartResponse(sampleType, rangeValue, bucketValue string, bucket time.
 	return response
 }
 
-func buildServiceChartResponse(group, rangeValue, bucketValue string, bucket time.Duration, maxPoints int, samples []model.Sample) chartResponse {
+func buildServiceChartResponse(group, rangeValue, bucketValue string, bucket time.Duration, maxPoints int, start, end time.Time, samples []model.Sample) chartResponse {
 	response := chartResponse{
-		Type:   "service_group",
-		Group:  group,
-		Range:  rangeValue,
-		Bucket: bucketValue,
+		GeneratedAt:      time.Now(),
+		ActualRangeStart: start,
+		ActualRangeEnd:   end,
+		Timezone:         time.Now().Location().String(),
+		Range:            rangeValue,
+		Bucket:           bucketValue,
+		BucketSeconds:    int(bucket.Seconds()),
+		MaxPoints:        maxPoints,
+		Type:             "service_group",
+		Group:            group,
 	}
 	if len(samples) == 0 {
 		return response

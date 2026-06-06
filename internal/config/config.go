@@ -29,6 +29,7 @@ type Config struct {
 
 type TargetConfig struct {
 	Name            string `json:"name"`
+	Label           string `json:"label"`
 	Type            string `json:"type"`
 	Group           string `json:"group"`
 	Category        string `json:"category"`

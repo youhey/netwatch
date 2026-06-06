@@ -9,18 +9,27 @@ import (
 	"time"
 
 	"github.com/youhey/netwatch/internal/collector"
+	"github.com/youhey/netwatch/internal/config"
 	"github.com/youhey/netwatch/internal/model"
 )
+
+const apiVersion = "0.4"
 
 type Handler struct {
 	state   *collector.State
 	version string
+	targets []config.TargetConfig
 }
 
-func New(state *collector.State, version string) *Handler {
+func New(state *collector.State, version string, targets ...[]config.TargetConfig) *Handler {
+	var configuredTargets []config.TargetConfig
+	if len(targets) > 0 {
+		configuredTargets = targets[0]
+	}
 	return &Handler{
 		state:   state,
 		version: version,
+		targets: configuredTargets,
 	}
 }
 
@@ -37,7 +46,11 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /api/services/latest", h.servicesLatest)
 	mux.HandleFunc("GET /api/services/series", h.servicesSeries)
 	mux.HandleFunc("GET /api/services/summary", h.servicesSummary)
+	mux.HandleFunc("GET /api/charts/catalog", h.chartsCatalog)
+	mux.HandleFunc("GET /api/charts/overview", h.chartsOverview)
 	mux.HandleFunc("GET /api/monitoring/status", h.monitoringStatus)
+	mux.HandleFunc("GET /api/monitoring/thresholds", h.monitoringThresholds)
+	mux.HandleFunc("GET /api/capabilities", h.capabilities)
 	return mux
 }
 
@@ -46,6 +59,27 @@ func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 		"ok":      true,
 		"service": "netwatch",
 		"version": h.version,
+	})
+}
+
+func (h *Handler) capabilities(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"service":      "netwatch",
+		"version":      h.version,
+		"api_version":  apiVersion,
+		"generated_at": time.Now(),
+		"features": map[string]bool{
+			"ping":                  true,
+			"dns":                   true,
+			"http":                  true,
+			"services":              true,
+			"charts":                true,
+			"charts_catalog":        true,
+			"charts_overview":       true,
+			"monitoring_status":     true,
+			"monitoring_thresholds": true,
+		},
+		"chart": chartSupport(),
 	})
 }
 
@@ -111,6 +145,10 @@ func (h *Handler) servicesSeries(w http.ResponseWriter, r *http.Request) {
 	}
 	duration, err := parseRange(rangeValue)
 	if err != nil {
+		if r.URL.Query().Get("bucket") != "" {
+			writeStructuredError(w, http.StatusBadRequest, "invalid_range", err.Error(), "range", nil)
+			return
+		}
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -118,16 +156,28 @@ func (h *Handler) servicesSeries(w http.ResponseWriter, r *http.Request) {
 	if bucketValue != "" {
 		bucket, err := parseBucket(bucketValue)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+			writeStructuredError(w, http.StatusBadRequest, "invalid_bucket", err.Error(), "bucket", nil)
 			return
 		}
 		maxPoints, err := parseMaxPoints(r.URL.Query().Get("max_points"))
 		if err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+			writeStructuredError(w, http.StatusBadRequest, "invalid_max_points", err.Error(), "max_points", maxPointsMeta())
 			return
 		}
-		samples := filterIgnoredServiceTargets(h.state.ServiceSeries(group, name, time.Now().Add(-duration)))
-		writeJSON(w, http.StatusOK, buildServiceChartResponse(group, rangeValue, bucketValue, bucket, maxPoints, samples))
+		end := time.Now()
+		start := end.Add(-duration)
+		samples := filterIgnoredServiceTargets(h.state.ServiceSeries(group, name, start))
+		if len(samples) == 0 {
+			code := "group_not_found"
+			param := "group"
+			if name != "" {
+				code = "target_not_found"
+				param = "name"
+			}
+			writeStructuredError(w, http.StatusNotFound, code, "chart series not found", param, nil)
+			return
+		}
+		writeJSON(w, http.StatusOK, buildServiceChartResponse(group, rangeValue, bucketValue, bucket, maxPoints, start, end, samples))
 		return
 	}
 
@@ -147,6 +197,10 @@ func (h *Handler) servicesSummary(w http.ResponseWriter, r *http.Request) {
 	}
 	duration, err := parseRange(rangeValue)
 	if err != nil {
+		if r.URL.Query().Get("bucket") != "" {
+			writeStructuredError(w, http.StatusBadRequest, "invalid_range", err.Error(), "range", nil)
+			return
+		}
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -177,16 +231,22 @@ func (h *Handler) series(w http.ResponseWriter, r *http.Request, sampleType stri
 	if bucketValue != "" {
 		bucket, err := parseBucket(bucketValue)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+			writeStructuredError(w, http.StatusBadRequest, "invalid_bucket", err.Error(), "bucket", nil)
 			return
 		}
 		maxPoints, err := parseMaxPoints(r.URL.Query().Get("max_points"))
 		if err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+			writeStructuredError(w, http.StatusBadRequest, "invalid_max_points", err.Error(), "max_points", maxPointsMeta())
 			return
 		}
-		samples := h.state.SeriesByType(sampleType, name, time.Now().Add(-duration))
-		writeJSON(w, http.StatusOK, buildChartResponse(sampleType, rangeValue, bucketValue, bucket, maxPoints, samples))
+		end := time.Now()
+		start := end.Add(-duration)
+		samples := h.state.SeriesByType(sampleType, name, start)
+		if len(samples) == 0 {
+			writeStructuredError(w, http.StatusNotFound, "target_not_found", "chart series not found", "name", nil)
+			return
+		}
+		writeJSON(w, http.StatusOK, buildChartResponse(sampleType, rangeValue, bucketValue, bucket, maxPoints, start, end, samples))
 		return
 	}
 
@@ -199,6 +259,26 @@ func (h *Handler) series(w http.ResponseWriter, r *http.Request, sampleType stri
 
 func (h *Handler) monitoringStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, buildMonitoringStatus(h.state.LatestAll()))
+}
+
+func (h *Handler) monitoringThresholds(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"generated_at": time.Now(),
+		"ping": map[string]any{
+			"external_rtt_avg_ms":   map[string]float64{"warning": 100, "critical": 200},
+			"external_loss_percent": map[string]float64{"warning": 1, "critical": 5},
+			"gateway_loss_percent":  map[string]float64{"warning": 0, "critical": 0},
+		},
+		"dns": map[string]any{
+			"duration_ms": map[string]float64{"warning": 300, "critical": 1000},
+		},
+		"http": map[string]any{
+			"total_ms": map[string]float64{"warning": 3000, "critical": 5000},
+		},
+		"service": map[string]any{
+			"ok_rate_percent": map[string]float64{"warning": 95, "critical": 90},
+		},
+	})
 }
 
 func parseRange(value string) (time.Duration, error) {
@@ -546,7 +626,11 @@ func isTimeoutError(value string) bool {
 }
 
 func isIgnoredServiceTarget(sample model.Sample) bool {
-	return sample.Name == "sf6_buckler_info"
+	return isIgnoredTargetName(sample.Name)
+}
+
+func isIgnoredTargetName(name string) bool {
+	return name == "sf6_buckler_info"
 }
 
 func filterIgnoredServiceTargets(samples []model.Sample) []model.Sample {
@@ -601,4 +685,27 @@ func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]any{
 		"error": message,
 	})
+}
+
+func writeStructuredError(w http.ResponseWriter, status int, code, message, param string, extra map[string]any) {
+	body := map[string]any{
+		"code":    code,
+		"message": message,
+	}
+	if param != "" {
+		body["param"] = param
+	}
+	for key, value := range extra {
+		body[key] = value
+	}
+	writeJSON(w, status, map[string]any{
+		"error": body,
+	})
+}
+
+func maxPointsMeta() map[string]any {
+	return map[string]any{
+		"min": minMaxPoints,
+		"max": maxMaxPoints,
+	}
 }

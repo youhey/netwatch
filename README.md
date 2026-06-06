@@ -391,6 +391,93 @@ Chart 集約仕様:
 - `ok=false` の DNS/HTTP sample は平均計算から除外し、失敗数には含めます
 - bucket 内に成功 sample がない場合、平均値は JSON 上で省略され、`0ms` と欠損を区別します
 
+Viewer 補助 API:
+
+```bash
+curl http://127.0.0.1:8080/api/charts/catalog
+curl 'http://127.0.0.1:8080/api/charts/overview?range=24h&bucket=5m&max_points=500'
+curl http://127.0.0.1:8080/api/monitoring/thresholds
+curl http://127.0.0.1:8080/api/capabilities
+```
+
+`/api/charts/catalog` は、現在の設定から利用可能な chart target を返します。Mac アプリ側で `cloudflare_dns` や `pcgame` などを固定せず、API から発見するための endpoint です。
+
+```json
+{
+  "generated_at": "2026-06-06T12:00:00+09:00",
+  "timezone": "Asia/Tokyo",
+  "defaults": {
+    "range": "24h",
+    "bucket": "5m",
+    "max_points": 500
+  },
+  "supported": {
+    "ranges": ["1h", "6h", "24h", "7d", "14d"],
+    "buckets": ["1m", "5m", "15m", "30m", "1h", "6h", "1d"]
+  },
+  "ping": [],
+  "dns": [],
+  "http": [],
+  "service_groups": []
+}
+```
+
+`/api/charts/overview` は、代表的な ping / HTTP / service group の chart data をまとめて返します。存在しない target や group はスキップします。
+
+Chart response には以下の metadata が含まれます。
+
+```json
+{
+  "generated_at": "2026-06-06T12:00:00+09:00",
+  "actual_range_start": "2026-06-05T12:00:00+09:00",
+  "actual_range_end": "2026-06-06T12:00:00+09:00",
+  "timezone": "Asia/Tokyo",
+  "range": "24h",
+  "bucket": "5m",
+  "bucket_seconds": 300,
+  "max_points": 500
+}
+```
+
+ゼロ値の扱い:
+
+- `sample_count` は常に返します
+- `failure_count` / `timeout_count` は `0` でも返します
+- service group の `ok_rate` は正常時も `100` を返します
+- 平均値が計算できない場合は `null` または省略で返し、`0ms` と欠損を混同しません
+
+`/api/monitoring/thresholds` は、Viewer がグラフに警戒ラインを描くためのしきい値を返します。値は `/api/monitoring/status` の判定と同じです。
+
+`/api/capabilities` は、API version と利用可能な機能を返します。
+
+```json
+{
+  "service": "netwatch",
+  "version": "dev",
+  "api_version": "0.4",
+  "features": {
+    "charts": true,
+    "charts_catalog": true,
+    "charts_overview": true,
+    "monitoring_thresholds": true
+  }
+}
+```
+
+Chart API 系の不正 query は構造化エラーを返します。
+
+```json
+{
+  "error": {
+    "code": "invalid_max_points",
+    "message": "max_points must be between 10 and 2000",
+    "param": "max_points",
+    "min": 10,
+    "max": 2000
+  }
+}
+```
+
 実サービス group の summary:
 
 ```bash
@@ -477,6 +564,10 @@ curl http://netpi:8080/api/latest
 curl http://netpi:8080/api/services/latest
 curl "http://netpi:8080/api/services/summary?range=1h"
 curl http://netpi:8080/api/monitoring/status
+curl http://netpi:8080/api/charts/catalog
+curl "http://netpi:8080/api/charts/overview?range=24h&bucket=5m&max_points=500"
+curl http://netpi:8080/api/monitoring/thresholds
+curl http://netpi:8080/api/capabilities
 curl "http://netpi:8080/api/ping/series?name=cloudflare_dns&range=24h&bucket=5m"
 curl "http://netpi:8080/api/http/series?name=youtube_home&range=24h&bucket=5m"
 curl "http://netpi:8080/api/services/series?group=pcgame&range=24h&bucket=5m"
