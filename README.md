@@ -666,7 +666,12 @@ Chart response には以下の metadata が含まれます。
     "charts_catalog": true,
     "charts_overview": true,
     "monitoring_status": true,
-    "monitoring_thresholds": true
+    "monitoring_thresholds": true,
+    "monitoring_status_history": true
+  },
+  "monitoring_status_history": {
+    "ranges": ["1h", "6h", "24h", "7d"],
+    "buckets": ["15m", "30m", "1h"]
   }
 }
 ```
@@ -790,6 +795,45 @@ curl http://127.0.0.1:8080/api/monitoring/status
 - `r2_1mb` が 5Mbps 未満なら `warning`、1Mbps 未満なら `critical`
 - `r2_10mb` が 10Mbps 未満なら `warning`、3Mbps 未満なら `critical`
 
+Viewer の Status History では、過去の monitoring status を bucket 単位に集約する API を使います。
+
+```bash
+curl "http://127.0.0.1:8080/api/monitoring/status/history?range=24h&bucket=1h"
+```
+
+`range=24h&bucket=1h` では 24 個の point を返します。sample がない bucket も省略せず、`level: "unknown"` として返します。bucket の代表 `level` は `critical > warning > unknown > ok` の優先順位で決めます。
+
+```json
+{
+  "source": "netwatch",
+  "generated_at": "2026-06-07T13:30:00+09:00",
+  "range": "24h",
+  "bucket": "1h",
+  "bucket_seconds": 3600,
+  "actual_range_start": "2026-06-06T14:00:00+09:00",
+  "actual_range_end": "2026-06-07T13:59:59+09:00",
+  "points": [
+    {
+      "bucket_start": "2026-06-06T14:00:00+09:00",
+      "bucket_end": "2026-06-06T14:59:59+09:00",
+      "level": "ok",
+      "alert": false,
+      "sample_count": 12,
+      "critical_count": 0,
+      "warning_count": 0,
+      "unknown_count": 0,
+      "ok_count": 12
+    }
+  ],
+  "summary": {
+    "ok_count": 22,
+    "warning_count": 1,
+    "critical_count": 1,
+    "unknown_count": 0
+  }
+}
+```
+
 ## 手動確認コマンド
 
 Raspberry Pi 上で daemon の外側から切り分ける場合は、以下を使います。
@@ -802,6 +846,7 @@ curl http://netpi:8080/api/latest
 curl http://netpi:8080/api/services/latest
 curl "http://netpi:8080/api/services/summary?range=1h"
 curl http://netpi:8080/api/monitoring/status
+curl "http://netpi:8080/api/monitoring/status/history?range=24h&bucket=1h"
 curl http://netpi:8080/api/charts/catalog
 curl "http://netpi:8080/api/charts/overview?range=24h&bucket=5m&max_points=500"
 curl http://netpi:8080/api/monitoring/thresholds

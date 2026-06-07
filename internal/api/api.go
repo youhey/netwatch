@@ -64,6 +64,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /api/charts/catalog", h.chartsCatalog)
 	mux.HandleFunc("GET /api/charts/overview", h.chartsOverview)
 	mux.HandleFunc("GET /api/monitoring/status", h.monitoringStatus)
+	mux.HandleFunc("GET /api/monitoring/status/history", h.monitoringStatusHistory)
 	mux.HandleFunc("GET /api/monitoring/thresholds", h.monitoringThresholds)
 	mux.HandleFunc("GET /api/capabilities", h.capabilities)
 	return mux
@@ -84,20 +85,22 @@ func (h *Handler) capabilities(w http.ResponseWriter, r *http.Request) {
 		"api_version":  apiVersion,
 		"generated_at": time.Now(),
 		"features": map[string]bool{
-			"ping":                  true,
-			"dns":                   true,
-			"http":                  true,
-			"download":              true,
-			"download_series":       true,
-			"services":              true,
-			"charts":                true,
-			"charts_download":       true,
-			"charts_catalog":        true,
-			"charts_overview":       true,
-			"monitoring_status":     true,
-			"monitoring_thresholds": true,
+			"ping":                      true,
+			"dns":                       true,
+			"http":                      true,
+			"download":                  true,
+			"download_series":           true,
+			"services":                  true,
+			"charts":                    true,
+			"charts_download":           true,
+			"charts_catalog":            true,
+			"charts_overview":           true,
+			"monitoring_status":         true,
+			"monitoring_thresholds":     true,
+			"monitoring_status_history": true,
 		},
-		"chart": chartSupport(),
+		"chart":                     chartSupport(),
+		"monitoring_status_history": monitoringStatusHistorySupport(),
 	})
 }
 
@@ -292,6 +295,34 @@ func (h *Handler) monitoringStatus(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) monitoringThresholds(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, monitoringThresholdsResponse(h.thresholds, time.Now()))
+}
+
+func (h *Handler) monitoringStatusHistory(w http.ResponseWriter, r *http.Request) {
+	rangeValue := r.URL.Query().Get("range")
+	if rangeValue == "" {
+		rangeValue = "24h"
+	}
+	duration, err := parseMonitoringHistoryRange(rangeValue)
+	if err != nil {
+		writeStructuredError(w, http.StatusBadRequest, "invalid_range", err.Error(), "range", nil)
+		return
+	}
+
+	bucketValue := r.URL.Query().Get("bucket")
+	if bucketValue == "" {
+		bucketValue = "1h"
+	}
+	bucket, err := parseMonitoringHistoryBucket(bucketValue)
+	if err != nil {
+		writeStructuredError(w, http.StatusBadRequest, "invalid_bucket", err.Error(), "bucket", nil)
+		return
+	}
+
+	generatedAt := time.Now()
+	end := nextBucketBoundary(generatedAt, bucket)
+	start := end.Add(-duration)
+	samples := h.applyDisplayMetadata(h.state.SamplesSince(start))
+	writeJSON(w, http.StatusOK, buildMonitoringStatusHistory(samples, h.thresholds, rangeValue, bucketValue, duration, bucket, start, end, generatedAt))
 }
 
 func (h *Handler) latestByType(sampleType string) []model.Sample {

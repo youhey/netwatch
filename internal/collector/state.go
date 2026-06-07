@@ -100,6 +100,23 @@ func (s *State) SeriesByType(sampleType, name string, since time.Time) []model.S
 	return samples
 }
 
+func (s *State) SamplesSince(since time.Time) []model.Sample {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var samples []model.Sample
+	for _, sample := range s.series {
+		if !sample.Timestamp.Before(since) {
+			samples = append(samples, sample)
+		}
+	}
+	sort.SliceStable(samples, func(i, j int) bool {
+		return samples[i].Timestamp.Before(samples[j].Timestamp)
+	})
+
+	return samples
+}
+
 func (s *State) LatestServices() []model.Sample {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
