@@ -8,8 +8,8 @@ import (
 	"github.com/youhey/netwatch/internal/model"
 )
 
-var monitoringHistoryRanges = []string{"1h", "6h", "24h", "7d"}
-var monitoringHistoryBuckets = []string{"15m", "30m", "1h"}
+var monitoringHistoryRanges = []string{"1h", "2h", "6h", "24h", "7d"}
+var monitoringHistoryBuckets = []string{"5m", "15m", "30m", "1h"}
 
 type monitoringStatusHistorySupportResponse struct {
 	Ranges  []string `json:"ranges"`
@@ -58,6 +58,8 @@ func parseMonitoringHistoryRange(value string) (time.Duration, error) {
 	switch value {
 	case "1h":
 		return time.Hour, nil
+	case "2h":
+		return 2 * time.Hour, nil
 	case "6h":
 		return 6 * time.Hour, nil
 	case "24h":
@@ -71,6 +73,8 @@ func parseMonitoringHistoryRange(value string) (time.Duration, error) {
 
 func parseMonitoringHistoryBucket(value string) (time.Duration, error) {
 	switch value {
+	case "5m":
+		return 5 * time.Minute, nil
 	case "15m":
 		return 15 * time.Minute, nil
 	case "30m":
@@ -184,7 +188,11 @@ func filterMonitoringHistorySamples(samples []model.Sample) []model.Sample {
 }
 
 func nextBucketBoundary(value time.Time, bucket time.Duration) time.Time {
-	return value.Truncate(bucket).Add(bucket)
+	truncated := value.Truncate(bucket)
+	if value.Equal(truncated) {
+		return truncated
+	}
+	return truncated.Add(bucket)
 }
 
 func (s *monitoringStatusHistorySummary) add(level string) {

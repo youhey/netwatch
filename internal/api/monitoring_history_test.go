@@ -13,22 +13,22 @@ import (
 )
 
 func TestParseMonitoringHistoryRange(t *testing.T) {
-	duration, err := parseMonitoringHistoryRange("24h")
+	duration, err := parseMonitoringHistoryRange("2h")
 	if err != nil {
 		t.Fatalf("parseMonitoringHistoryRange() error = %v", err)
 	}
-	if duration != 24*time.Hour {
-		t.Fatalf("duration = %v, want 24h", duration)
+	if duration != 2*time.Hour {
+		t.Fatalf("duration = %v, want 2h", duration)
 	}
 }
 
 func TestParseMonitoringHistoryBucket(t *testing.T) {
-	bucket, err := parseMonitoringHistoryBucket("1h")
+	bucket, err := parseMonitoringHistoryBucket("5m")
 	if err != nil {
 		t.Fatalf("parseMonitoringHistoryBucket() error = %v", err)
 	}
-	if bucket != time.Hour {
-		t.Fatalf("bucket = %v, want 1h", bucket)
+	if bucket != 5*time.Minute {
+		t.Fatalf("bucket = %v, want 5m", bucket)
 	}
 }
 
@@ -127,6 +127,60 @@ func TestBuildMonitoringStatusHistoryBucketsAndSummary(t *testing.T) {
 	}
 }
 
+func TestBuildMonitoringStatusHistoryTwoHourFiveMinuteBuckets(t *testing.T) {
+	ok := true
+	now := time.Date(2026, 6, 7, 13, 30, 0, 0, time.Local)
+	bucket := 5 * time.Minute
+	duration := 2 * time.Hour
+	end := nextBucketBoundary(now, bucket)
+	start := end.Add(-duration)
+	samples := []model.Sample{
+		{Timestamp: start.Add(5*time.Minute + time.Minute), Type: "ping", Name: "gateway", OK: &ok, LossPercent: floatPtr(0), RTTAvgMs: floatPtr(1)},
+	}
+
+	body := buildMonitoringStatusHistory(samples, config.DefaultMonitoringThresholds(), "2h", "5m", duration, bucket, start, end, now)
+
+	if body.Range != "2h" || body.Bucket != "5m" || body.BucketSeconds != 300 {
+		t.Fatalf("metadata = %+v, want 2h/5m", body)
+	}
+	if len(body.Points) != 24 {
+		t.Fatalf("len(points) = %d, want 24", len(body.Points))
+	}
+	if body.Points[0].Level != "unknown" || body.Points[0].SampleCount != 0 {
+		t.Fatalf("points[0] = %+v, want unknown empty bucket", body.Points[0])
+	}
+	if body.Points[1].Level != "ok" || body.Points[1].OKCount != 1 {
+		t.Fatalf("points[1] = %+v, want ok bucket", body.Points[1])
+	}
+}
+
+func TestMonitoringStatusHistoryEndpointTwoHourFiveMinuteBuckets(t *testing.T) {
+	handler := New(collector.NewState(), "test").Routes()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/monitoring/status/history?range=2h&bucket=5m", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var body monitoringStatusHistoryResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if body.Range != "2h" || body.Bucket != "5m" || len(body.Points) != 24 || body.Points[0].Level != "unknown" {
+		t.Fatalf("body = %+v, want 2h/5m unknown history", body)
+	}
+}
+
+func TestBuildMonitoringStatusHistoryKeepsTwentyFourHourOneHourBuckets(t *testing.T) {
+	body := buildMonitoringStatusHistory(nil, config.DefaultMonitoringThresholds(), "24h", "1h", 24*time.Hour, time.Hour, time.Now().Add(-24*time.Hour), time.Now(), time.Now())
+
+	if body.Range != "24h" || body.Bucket != "1h" || len(body.Points) != 24 {
+		t.Fatalf("history = %+v, want existing 24h/1h support", body)
+	}
+}
+
 func TestMonitoringStatusHistoryCapabilities(t *testing.T) {
 	handler := New(collector.NewState(), "test").Routes()
 
@@ -144,7 +198,19 @@ func TestMonitoringStatusHistoryCapabilities(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("Unmarshal() error = %v", err)
 	}
-	if !body.Features["monitoring_status_history"] || len(body.History.Ranges) == 0 || len(body.History.Buckets) == 0 {
+	if !body.Features["monitoring_status_history"] || !body.Features["monitoring_status_history_2h_5m"] || len(body.History.Ranges) == 0 || len(body.History.Buckets) == 0 {
 		t.Fatalf("capabilities = %+v, want monitoring status history support", body)
 	}
+	if !containsString(body.History.Ranges, "2h") || !containsString(body.History.Buckets, "5m") {
+		t.Fatalf("capabilities history = %+v, want 2h/5m support", body.History)
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }

@@ -65,6 +65,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /api/charts/overview", h.chartsOverview)
 	mux.HandleFunc("GET /api/monitoring/status", h.monitoringStatus)
 	mux.HandleFunc("GET /api/monitoring/status/history", h.monitoringStatusHistory)
+	mux.HandleFunc("GET /api/monitoring/compact", h.monitoringCompact)
 	mux.HandleFunc("GET /api/monitoring/thresholds", h.monitoringThresholds)
 	mux.HandleFunc("GET /api/capabilities", h.capabilities)
 	return mux
@@ -85,22 +86,25 @@ func (h *Handler) capabilities(w http.ResponseWriter, r *http.Request) {
 		"api_version":  apiVersion,
 		"generated_at": time.Now(),
 		"features": map[string]bool{
-			"ping":                      true,
-			"dns":                       true,
-			"http":                      true,
-			"download":                  true,
-			"download_series":           true,
-			"services":                  true,
-			"charts":                    true,
-			"charts_download":           true,
-			"charts_catalog":            true,
-			"charts_overview":           true,
-			"monitoring_status":         true,
-			"monitoring_thresholds":     true,
-			"monitoring_status_history": true,
+			"ping":                            true,
+			"dns":                             true,
+			"http":                            true,
+			"download":                        true,
+			"download_series":                 true,
+			"services":                        true,
+			"charts":                          true,
+			"charts_download":                 true,
+			"charts_catalog":                  true,
+			"charts_overview":                 true,
+			"monitoring_status":               true,
+			"monitoring_thresholds":           true,
+			"monitoring_status_history":       true,
+			"monitoring_status_history_2h_5m": true,
+			"monitoring_compact":              true,
 		},
 		"chart":                     chartSupport(),
 		"monitoring_status_history": monitoringStatusHistorySupport(),
+		"monitoring_compact":        monitoringCompactSupport(),
 	})
 }
 
@@ -323,6 +327,17 @@ func (h *Handler) monitoringStatusHistory(w http.ResponseWriter, r *http.Request
 	start := end.Add(-duration)
 	samples := h.applyDisplayMetadata(h.state.SamplesSince(start))
 	writeJSON(w, http.StatusOK, buildMonitoringStatusHistory(samples, h.thresholds, rangeValue, bucketValue, duration, bucket, start, end, generatedAt))
+}
+
+func (h *Handler) monitoringCompact(w http.ResponseWriter, r *http.Request) {
+	generatedAt := time.Now()
+	duration := 2 * time.Hour
+	bucket := 5 * time.Minute
+	end := nextBucketBoundary(generatedAt, bucket)
+	start := end.Add(-duration)
+	status := buildMonitoringStatus(h.applyDisplayMetadata(h.state.LatestAll()), h.thresholds, generatedAt)
+	history := buildMonitoringStatusHistory(h.applyDisplayMetadata(h.state.SamplesSince(start)), h.thresholds, "2h", "5m", duration, bucket, start, end, generatedAt)
+	writeJSON(w, http.StatusOK, buildMonitoringCompact(status, history, generatedAt))
 }
 
 func (h *Handler) latestByType(sampleType string) []model.Sample {

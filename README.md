@@ -667,11 +667,18 @@ Chart response には以下の metadata が含まれます。
     "charts_overview": true,
     "monitoring_status": true,
     "monitoring_thresholds": true,
-    "monitoring_status_history": true
+    "monitoring_status_history": true,
+    "monitoring_status_history_2h_5m": true,
+    "monitoring_compact": true
   },
   "monitoring_status_history": {
-    "ranges": ["1h", "6h", "24h", "7d"],
-    "buckets": ["15m", "30m", "1h"]
+    "ranges": ["1h", "2h", "6h", "24h", "7d"],
+    "buckets": ["5m", "15m", "30m", "1h"]
+  },
+  "monitoring_compact": {
+    "history_range": "2h",
+    "history_bucket": "5m",
+    "history_points": 24
   }
 }
 ```
@@ -799,9 +806,10 @@ Viewer の Status History では、過去の monitoring status を bucket 単位
 
 ```bash
 curl "http://127.0.0.1:8080/api/monitoring/status/history?range=24h&bucket=1h"
+curl "http://127.0.0.1:8080/api/monitoring/status/history?range=2h&bucket=5m"
 ```
 
-`range=24h&bucket=1h` では 24 個の point を返します。sample がない bucket も省略せず、`level: "unknown"` として返します。bucket の代表 `level` は `critical > warning > unknown > ok` の優先順位で決めます。
+`range=24h&bucket=1h` と `range=2h&bucket=5m` はどちらも 24 個の point を返します。sample がない bucket も省略せず、`level: "unknown"` として返します。bucket の代表 `level` は `critical > warning > unknown > ok` の優先順位で決めます。
 
 ```json
 {
@@ -834,6 +842,52 @@ curl "http://127.0.0.1:8080/api/monitoring/status/history?range=24h&bucket=1h"
 }
 ```
 
+M5Stack / macOS Widget / MenuBar などの小型表示向けには、現在状態と直近2時間の軽量履歴をまとめた compact API を使います。
+
+```bash
+curl "http://127.0.0.1:8080/api/monitoring/compact"
+```
+
+compact API の `label` は小型画面にそのまま表示する短い文字列です。
+
+- `ok`: `NET OK`
+- `warning`: `WARN`
+- `critical`: `CRIT`
+- `unknown`: `UNK`
+
+`history` は `range=2h` / `bucket=5m` / 24 points 固定で、各 point は `level` と `alert` のみを返します。`issue_count` は現在 status の reasons 数です。
+
+```json
+{
+  "source": "netwatch",
+  "generated_at": "2026-06-07T13:30:00+09:00",
+  "level": "warning",
+  "label": "WARN",
+  "alert": true,
+  "title": "Network degradation detected",
+  "message": "Download throughput is below the warning threshold on r2_1mb.",
+  "issue_count": 1,
+  "primary_reason": {
+    "code": "download_slow",
+    "level": "warning",
+    "target": "r2_1mb",
+    "metric": "mbps",
+    "value": 3.2
+  },
+  "history": {
+    "range": "2h",
+    "bucket": "5m",
+    "bucket_seconds": 300,
+    "points": [
+      {
+        "level": "ok",
+        "alert": false
+      }
+    ]
+  }
+}
+```
+
 ## 手動確認コマンド
 
 Raspberry Pi 上で daemon の外側から切り分ける場合は、以下を使います。
@@ -847,6 +901,8 @@ curl http://netpi:8080/api/services/latest
 curl "http://netpi:8080/api/services/summary?range=1h"
 curl http://netpi:8080/api/monitoring/status
 curl "http://netpi:8080/api/monitoring/status/history?range=24h&bucket=1h"
+curl "http://netpi:8080/api/monitoring/status/history?range=2h&bucket=5m"
+curl "http://netpi:8080/api/monitoring/compact"
 curl http://netpi:8080/api/charts/catalog
 curl "http://netpi:8080/api/charts/overview?range=24h&bucket=5m&max_points=500"
 curl http://netpi:8080/api/monitoring/thresholds
