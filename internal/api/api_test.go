@@ -94,6 +94,44 @@ func TestDownloadLatest(t *testing.T) {
 	assertSampleCount(t, rec, 1)
 }
 
+func TestDownloadLatestIncludesRetryMetadata(t *testing.T) {
+	state := collector.NewState()
+	ok := true
+	nextCheckAt := time.Date(2026, 6, 7, 13, 30, 30, 0, time.UTC)
+	state.Load([]model.Sample{
+		{
+			Timestamp:            time.Now(),
+			Type:                 "download",
+			Name:                 "r2_1mb",
+			OK:                   &ok,
+			Mbps:                 floatPtr(3.2),
+			RetryState:           "degraded",
+			RetryAttempt:         intPtr(1),
+			RecoverySuccessCount: intPtr(0),
+			NextCheckAt:          &nextCheckAt,
+		},
+	})
+	handler := New(state, "test").Routes()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/download/latest", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	var body struct {
+		Samples []model.Sample `json:"samples"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if len(body.Samples) != 1 {
+		t.Fatalf("len(samples) = %d, want 1", len(body.Samples))
+	}
+	sample := body.Samples[0]
+	if sample.RetryState != "degraded" || sample.RetryAttempt == nil || *sample.RetryAttempt != 1 || sample.RecoverySuccessCount == nil || *sample.RecoverySuccessCount != 0 || sample.NextCheckAt == nil || !sample.NextCheckAt.Equal(nextCheckAt) {
+		t.Fatalf("sample = %+v, want retry metadata", sample)
+	}
+}
+
 func TestLatestBackfillsDisplayOrderFromConfig(t *testing.T) {
 	state := collector.NewState()
 	ok := true

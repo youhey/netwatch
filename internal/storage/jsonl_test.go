@@ -51,13 +51,16 @@ func TestAppendMixedSamples(t *testing.T) {
 	expectedBytes := int64(1048576)
 	downloadedBytes := int64(1048576)
 	mbps := 8.388608
+	retryAttempt := 1
+	recoverySuccessCount := 0
+	nextCheckAt := time.Now().UTC().Add(30 * time.Second)
 
 	jsonl := NewJSONL(path)
 	samples := []model.Sample{
 		{Timestamp: time.Now().UTC(), Type: "ping", Name: "ping", Target: "1.1.1.1", OK: &ok},
 		{Timestamp: time.Now().UTC(), Type: "dns", Name: "dns", Hostname: "example.com", OK: &ok, DurationMs: &duration},
 		{Timestamp: time.Now().UTC(), Type: "http", Group: "youtube", Category: "service", Name: "http", URL: "https://example.com/", Method: "GET", OK: &ok, HTTPStatus: &status, TotalMs: &total},
-		{Timestamp: time.Now().UTC(), Type: "download", Name: "r2_1mb", URL: "https://example.com/netwatch-1mb.bin", ExpectedBytes: &expectedBytes, DownloadedBytes: &downloadedBytes, DurationMs: &duration, Mbps: &mbps, OK: &ok},
+		{Timestamp: time.Now().UTC(), Type: "download", Name: "r2_1mb", URL: "https://example.com/netwatch-1mb.bin", ExpectedBytes: &expectedBytes, DownloadedBytes: &downloadedBytes, DurationMs: &duration, Mbps: &mbps, OK: &ok, RetryState: "degraded", RetryAttempt: &retryAttempt, RecoverySuccessCount: &recoverySuccessCount, NextCheckAt: &nextCheckAt},
 	}
 	for _, sample := range samples {
 		if err := jsonl.Append(sample); err != nil {
@@ -77,6 +80,9 @@ func TestAppendMixedSamples(t *testing.T) {
 	}
 	if loaded[3].DownloadedBytes == nil || *loaded[3].DownloadedBytes != downloadedBytes {
 		t.Fatalf("loaded[3] = %+v, want download restored", loaded[3])
+	}
+	if loaded[3].RetryState != "degraded" || loaded[3].RetryAttempt == nil || *loaded[3].RetryAttempt != retryAttempt || loaded[3].RecoverySuccessCount == nil || *loaded[3].RecoverySuccessCount != recoverySuccessCount || loaded[3].NextCheckAt == nil || !loaded[3].NextCheckAt.Equal(nextCheckAt) {
+		t.Fatalf("loaded[3] = %+v, want retry metadata restored", loaded[3])
 	}
 }
 

@@ -31,24 +31,26 @@ type DownloadProbe interface {
 }
 
 type Collector struct {
-	cfg      config.Config
-	ping     PingProbe
-	dns      DNSProbe
-	http     HTTPProbe
-	download DownloadProbe
-	storage  Storage
-	state    *State
+	cfg             config.Config
+	ping            PingProbe
+	dns             DNSProbe
+	http            HTTPProbe
+	download        DownloadProbe
+	storage         Storage
+	state           *State
+	downloadRetries map[string]*downloadRetryRuntime
 }
 
 func New(cfg config.Config, ping PingProbe, dns DNSProbe, http HTTPProbe, download DownloadProbe, storage Storage, state *State) *Collector {
 	return &Collector{
-		cfg:      cfg,
-		ping:     ping,
-		dns:      dns,
-		http:     http,
-		download: download,
-		storage:  storage,
-		state:    state,
+		cfg:             cfg,
+		ping:            ping,
+		dns:             dns,
+		http:            http,
+		download:        download,
+		storage:         storage,
+		state:           state,
+		downloadRetries: make(map[string]*downloadRetryRuntime),
 	}
 }
 
@@ -94,8 +96,7 @@ func (c *Collector) collectDue(ctx context.Context, nextRuns map[string]time.Tim
 			continue
 		}
 
-		c.collectDownload(ctx, downloadProbe)
-		nextRuns[key] = now.Add(time.Duration(downloadProbe.IntervalSeconds) * time.Second)
+		nextRuns[key] = c.collectDownload(ctx, downloadProbe, now)
 	}
 }
 
@@ -108,13 +109,15 @@ func (c *Collector) collectTarget(ctx context.Context, target config.TargetConfi
 	c.state.Add(sample)
 }
 
-func (c *Collector) collectDownload(ctx context.Context, downloadProbe config.DownloadProbeConfig) {
+func (c *Collector) collectDownload(ctx context.Context, downloadProbe config.DownloadProbeConfig, checkedAt time.Time) time.Time {
 	sample := c.measureDownload(ctx, downloadProbe)
+	nextCheckAt := c.updateDownloadRetry(downloadProbe, &sample, checkedAt)
 	if err := c.storage.Append(sample); err != nil {
 		log.Printf("append sample failed: type=%s name=%s error=%v", sample.Type, sample.Name, err)
-		return
+		return nextCheckAt
 	}
 	c.state.Add(sample)
+	return nextCheckAt
 }
 
 func (c *Collector) measure(ctx context.Context, target config.TargetConfig) model.Sample {
@@ -272,6 +275,131 @@ func (c *Collector) measureDownload(ctx context.Context, downloadProbe config.Do
 	sample.Mbps = &result.Mbps
 
 	return sample
+}
+
+const (
+	downloadRetryStateNormal     = "normal"
+	downloadRetryStateDegraded   = "degraded"
+	downloadRetryStateRecovering = "recovering"
+)
+
+type downloadRetryRuntime struct {
+	State                string
+	Attempt              int
+	RecoverySuccessCount int
+	NextCheckAt          time.Time
+	LastResultLevel      string
+}
+
+func (c *Collector) updateDownloadRetry(downloadProbe config.DownloadProbeConfig, sample *model.Sample, checkedAt time.Time) time.Time {
+	retry := downloadProbe.EffectiveRetryOnAlert()
+	if !retry.Enabled {
+		return checkedAt.Add(time.Duration(downloadProbe.IntervalSeconds) * time.Second)
+	}
+
+	runtime := c.downloadRetryState(downloadProbe.Name)
+	resultLevel := c.downloadResultLevel(*sample)
+	alert := resultLevel == "warning" || resultLevel == "critical"
+
+	switch runtime.State {
+	case downloadRetryStateDegraded, downloadRetryStateRecovering:
+		c.updateActiveDownloadRetry(runtime, retry, alert, checkedAt, downloadProbe.IntervalSeconds)
+	default:
+		c.updateNormalDownloadRetry(runtime, retry, alert, checkedAt, downloadProbe.IntervalSeconds)
+	}
+	runtime.LastResultLevel = resultLevel
+	c.applyDownloadRetryMetadata(sample, runtime)
+	return runtime.NextCheckAt
+}
+
+func (c *Collector) downloadRetryState(name string) *downloadRetryRuntime {
+	if c.downloadRetries == nil {
+		c.downloadRetries = make(map[string]*downloadRetryRuntime)
+	}
+	runtime, ok := c.downloadRetries[name]
+	if !ok {
+		runtime = &downloadRetryRuntime{State: downloadRetryStateNormal}
+		c.downloadRetries[name] = runtime
+	}
+	return runtime
+}
+
+func (c *Collector) updateNormalDownloadRetry(runtime *downloadRetryRuntime, retry config.RetryOnAlertConfig, alert bool, checkedAt time.Time, normalIntervalSeconds int) {
+	if !alert {
+		runtime.State = downloadRetryStateNormal
+		runtime.Attempt = 0
+		runtime.RecoverySuccessCount = 0
+		runtime.NextCheckAt = checkedAt.Add(time.Duration(normalIntervalSeconds) * time.Second)
+		return
+	}
+	runtime.State = downloadRetryStateDegraded
+	runtime.Attempt = 0
+	runtime.RecoverySuccessCount = 0
+	runtime.NextCheckAt = checkedAt.Add(time.Duration(retryIntervalSeconds(retry, runtime.Attempt)) * time.Second)
+}
+
+func (c *Collector) updateActiveDownloadRetry(runtime *downloadRetryRuntime, retry config.RetryOnAlertConfig, alert bool, checkedAt time.Time, normalIntervalSeconds int) {
+	if alert {
+		runtime.State = downloadRetryStateDegraded
+		runtime.RecoverySuccessCount = 0
+		runtime.Attempt++
+		runtime.NextCheckAt = checkedAt.Add(time.Duration(retryIntervalSeconds(retry, runtime.Attempt)) * time.Second)
+		return
+	}
+
+	runtime.State = downloadRetryStateRecovering
+	runtime.RecoverySuccessCount++
+	if runtime.RecoverySuccessCount >= retry.RecoverySuccessCount {
+		runtime.State = downloadRetryStateNormal
+		runtime.Attempt = 0
+		runtime.RecoverySuccessCount = 0
+		runtime.NextCheckAt = checkedAt.Add(time.Duration(normalIntervalSeconds) * time.Second)
+		return
+	}
+	runtime.NextCheckAt = checkedAt.Add(time.Duration(retryIntervalSeconds(retry, runtime.Attempt)) * time.Second)
+}
+
+func retryIntervalSeconds(retry config.RetryOnAlertConfig, attempt int) int {
+	if len(retry.IntervalsSeconds) == 0 {
+		return 1
+	}
+	if attempt < 0 {
+		attempt = 0
+	}
+	if attempt >= len(retry.IntervalsSeconds) {
+		attempt = len(retry.IntervalsSeconds) - 1
+	}
+	return retry.IntervalsSeconds[attempt]
+}
+
+func (c *Collector) downloadResultLevel(sample model.Sample) string {
+	if sample.Error != "" || sample.OK != nil && !*sample.OK {
+		return "warning"
+	}
+	if sample.Mbps == nil {
+		return "ok"
+	}
+	threshold, ok := c.cfg.MonitoringThresholds.Download[sample.Name+"_mbps"]
+	if !ok {
+		return "ok"
+	}
+	if *sample.Mbps < threshold.Critical {
+		return "critical"
+	}
+	if *sample.Mbps < threshold.Warning {
+		return "warning"
+	}
+	return "ok"
+}
+
+func (c *Collector) applyDownloadRetryMetadata(sample *model.Sample, runtime *downloadRetryRuntime) {
+	attempt := runtime.Attempt
+	recoverySuccessCount := runtime.RecoverySuccessCount
+	nextCheckAt := runtime.NextCheckAt
+	sample.RetryState = runtime.State
+	sample.RetryAttempt = &attempt
+	sample.RecoverySuccessCount = &recoverySuccessCount
+	sample.NextCheckAt = &nextCheckAt
 }
 
 func boolPtr(value bool) *bool {

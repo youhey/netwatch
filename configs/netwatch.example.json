@@ -69,7 +69,19 @@
       "expected_bytes": 1048576,
       "interval_seconds": 600,
       "timeout_seconds": 20,
-      "enabled": true
+      "enabled": true,
+      "retry_on_alert": {
+        "enabled": true,
+        "intervals_seconds": [
+          10,
+          30,
+          60,
+          180,
+          300,
+          600
+        ],
+        "recovery_success_count": 2
+      }
     },
     {
       "name": "r2_10mb",
@@ -79,7 +91,20 @@
       "expected_bytes": 10485760,
       "interval_seconds": 3600,
       "timeout_seconds": 60,
-      "enabled": true
+      "enabled": true,
+      "retry_on_alert": {
+        "enabled": true,
+        "intervals_seconds": [
+          30,
+          60,
+          300,
+          600,
+          900,
+          1800,
+          3600
+        ],
+        "recovery_success_count": 2
+      }
     }
   ],
   "targets": [

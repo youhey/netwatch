@@ -118,6 +118,31 @@ func TestMonitoringStatusIDIsStableForSameReasons(t *testing.T) {
 	}
 }
 
+func TestDownloadReasonIncludesRetryMetadata(t *testing.T) {
+	ok := true
+	nextCheckAt := time.Date(2026, 6, 7, 13, 30, 30, 0, time.UTC)
+	reasons := collectMonitoringReasons([]model.Sample{
+		{
+			Type:                 "download",
+			Name:                 "r2_1mb",
+			OK:                   &ok,
+			Mbps:                 floatPtr(3.2),
+			RetryState:           "degraded",
+			RetryAttempt:         intPtr(1),
+			RecoverySuccessCount: intPtr(0),
+			NextCheckAt:          &nextCheckAt,
+		},
+	}, config.DefaultMonitoringThresholds())
+
+	if len(reasons) != 1 {
+		t.Fatalf("len(reasons) = %d, want 1", len(reasons))
+	}
+	reason := reasons[0]
+	if reason.Code != "download_slow" || reason.RetryState != "degraded" || reason.RetryAttempt == nil || *reason.RetryAttempt != 1 || reason.NextCheckAt == nil || !reason.NextCheckAt.Equal(nextCheckAt) {
+		t.Fatalf("reason = %+v, want retry metadata", reason)
+	}
+}
+
 func reasonCodeSet(reasons []monitoringReason) map[string]bool {
 	codes := make(map[string]bool, len(reasons))
 	for _, reason := range reasons {

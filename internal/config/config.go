@@ -77,14 +77,21 @@ type TargetConfig struct {
 }
 
 type DownloadProbeConfig struct {
-	Name            string `json:"name"`
-	Label           string `json:"label"`
-	URL             string `json:"url"`
-	ExpectedBytes   int64  `json:"expected_bytes"`
-	IntervalSeconds int    `json:"interval_seconds"`
-	TimeoutSeconds  int    `json:"timeout_seconds"`
-	Enabled         bool   `json:"enabled"`
-	DisplayOrder    int    `json:"display_order"`
+	Name            string             `json:"name"`
+	Label           string             `json:"label"`
+	URL             string             `json:"url"`
+	ExpectedBytes   int64              `json:"expected_bytes"`
+	IntervalSeconds int                `json:"interval_seconds"`
+	TimeoutSeconds  int                `json:"timeout_seconds"`
+	Enabled         bool               `json:"enabled"`
+	DisplayOrder    int                `json:"display_order"`
+	RetryOnAlert    RetryOnAlertConfig `json:"retry_on_alert"`
+}
+
+type RetryOnAlertConfig struct {
+	Enabled              bool  `json:"enabled"`
+	IntervalsSeconds     []int `json:"intervals_seconds"`
+	RecoverySuccessCount int   `json:"recovery_success_count"`
 }
 
 func Load(path string) (Config, error) {
@@ -266,8 +273,38 @@ func (c Config) Validate() error {
 		if downloadProbe.DisplayOrder < 0 {
 			return fmt.Errorf("download_probes[%d].display_order must be greater than or equal to 0", i)
 		}
+		if err := validateRetryOnAlert(downloadProbe); err != nil {
+			return fmt.Errorf("download_probes[%d].retry_on_alert is invalid: %w", i, err)
+		}
 	}
 
+	return nil
+}
+
+func validateRetryOnAlert(probe DownloadProbeConfig) error {
+	retry := probe.EffectiveRetryOnAlert()
+	if !retry.Enabled {
+		for _, interval := range probe.RetryOnAlert.IntervalsSeconds {
+			if interval <= 0 {
+				return errors.New("intervals_seconds must contain values greater than 0")
+			}
+		}
+		if probe.RetryOnAlert.RecoverySuccessCount < 0 {
+			return errors.New("recovery_success_count must be greater than or equal to 0")
+		}
+		return nil
+	}
+	if len(retry.IntervalsSeconds) == 0 {
+		return errors.New("intervals_seconds must not be empty")
+	}
+	for _, interval := range retry.IntervalsSeconds {
+		if interval <= 0 {
+			return errors.New("intervals_seconds must contain values greater than 0")
+		}
+	}
+	if retry.RecoverySuccessCount <= 0 {
+		return errors.New("recovery_success_count must be greater than 0")
+	}
 	return nil
 }
 
@@ -376,4 +413,32 @@ func (c Config) EnabledDownloadProbes() []DownloadProbeConfig {
 		probes = append(probes, probe)
 	}
 	return probes
+}
+
+func (p DownloadProbeConfig) EffectiveRetryOnAlert() RetryOnAlertConfig {
+	retry := p.RetryOnAlert
+	if !retry.Enabled {
+		return retry
+	}
+	if len(retry.IntervalsSeconds) == 0 {
+		retry.IntervalsSeconds = defaultDownloadRetryIntervals(p.Name, p.IntervalSeconds)
+	}
+	if retry.RecoverySuccessCount == 0 {
+		retry.RecoverySuccessCount = 2
+	}
+	return retry
+}
+
+func defaultDownloadRetryIntervals(name string, normalIntervalSeconds int) []int {
+	switch name {
+	case "r2_1mb":
+		return []int{10, 30, 60, 180, 300, 600}
+	case "r2_10mb":
+		return []int{30, 60, 300, 600, 900, 1800, 3600}
+	default:
+		if normalIntervalSeconds > 0 {
+			return []int{normalIntervalSeconds}
+		}
+		return nil
+	}
 }

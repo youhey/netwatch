@@ -117,7 +117,12 @@ func TestLoadDownloadProbes(t *testing.T) {
       "expected_bytes": 1048576,
       "interval_seconds": 600,
       "timeout_seconds": 20,
-      "enabled": true
+      "enabled": true,
+      "retry_on_alert": {
+        "enabled": true,
+        "intervals_seconds": [10, 30, 60],
+        "recovery_success_count": 3
+      }
     },
     {
       "name": "disabled",
@@ -153,8 +158,42 @@ func TestLoadDownloadProbes(t *testing.T) {
 	if probe.Name != "r2_1mb" || probe.Label != "R2 1MB" || probe.DisplayOrder != 10 || probe.ExpectedBytes != 1048576 || probe.IntervalSeconds != 600 || probe.TimeoutSeconds != 20 {
 		t.Fatalf("probe = %+v, want download settings loaded", probe)
 	}
+	retry := probe.EffectiveRetryOnAlert()
+	if !retry.Enabled || len(retry.IntervalsSeconds) != 3 || retry.IntervalsSeconds[0] != 10 || retry.IntervalsSeconds[2] != 60 || retry.RecoverySuccessCount != 3 {
+		t.Fatalf("retry = %+v, want retry_on_alert settings loaded", retry)
+	}
 	if cfg.Targets[0].Label != "Home" || cfg.Targets[0].DisplayOrder != 70 {
 		t.Fatalf("target = %+v, want label and display_order", cfg.Targets[0])
+	}
+}
+
+func TestDownloadRetryOnAlertDefaults(t *testing.T) {
+	probe := DownloadProbeConfig{
+		Name:            "r2_10mb",
+		IntervalSeconds: 3600,
+		RetryOnAlert: RetryOnAlertConfig{
+			Enabled: true,
+		},
+	}
+
+	retry := probe.EffectiveRetryOnAlert()
+	if !retry.Enabled || retry.RecoverySuccessCount != 2 {
+		t.Fatalf("retry = %+v, want enabled default recovery count", retry)
+	}
+	if len(retry.IntervalsSeconds) != 7 || retry.IntervalsSeconds[0] != 30 || retry.IntervalsSeconds[6] != 3600 {
+		t.Fatalf("intervals = %+v, want r2_10mb defaults", retry.IntervalsSeconds)
+	}
+}
+
+func TestDownloadRetryOnAlertDefaultDisabledForExistingConfig(t *testing.T) {
+	probe := DownloadProbeConfig{
+		Name:            "r2_1mb",
+		IntervalSeconds: 600,
+	}
+
+	retry := probe.EffectiveRetryOnAlert()
+	if retry.Enabled || len(retry.IntervalsSeconds) != 0 || retry.RecoverySuccessCount != 0 {
+		t.Fatalf("retry = %+v, want disabled zero-value for existing config", retry)
 	}
 }
 
@@ -358,5 +397,13 @@ func TestLoadExampleConfig(t *testing.T) {
 	probes := cfg.EnabledDownloadProbes()
 	if probes[0].Name != "r2_1mb" || probes[0].Label != "R2 1MB" || probes[0].DisplayOrder != 10 || probes[1].Name != "r2_10mb" || probes[1].Label != "R2 10MB" || probes[1].DisplayOrder != 20 {
 		t.Fatalf("download probe order = %+v, want r2_1mb then r2_10mb", probes)
+	}
+	firstRetry := probes[0].EffectiveRetryOnAlert()
+	secondRetry := probes[1].EffectiveRetryOnAlert()
+	if !firstRetry.Enabled || len(firstRetry.IntervalsSeconds) != 6 || firstRetry.IntervalsSeconds[0] != 10 || firstRetry.RecoverySuccessCount != 2 {
+		t.Fatalf("r2_1mb retry = %+v, want example adaptive retry", firstRetry)
+	}
+	if !secondRetry.Enabled || len(secondRetry.IntervalsSeconds) != 7 || secondRetry.IntervalsSeconds[0] != 30 || secondRetry.IntervalsSeconds[6] != 3600 || secondRetry.RecoverySuccessCount != 2 {
+		t.Fatalf("r2_10mb retry = %+v, want example adaptive retry", secondRetry)
 	}
 }

@@ -14,13 +14,17 @@ import (
 )
 
 type monitoringReason struct {
-	Code     string   `json:"code"`
-	Level    string   `json:"level"`
-	Target   string   `json:"target"`
-	Metric   string   `json:"metric"`
-	Value    float64  `json:"value"`
-	Warning  *float64 `json:"warning,omitempty"`
-	Critical *float64 `json:"critical,omitempty"`
+	Code                 string     `json:"code"`
+	Level                string     `json:"level"`
+	Target               string     `json:"target"`
+	Metric               string     `json:"metric"`
+	Value                float64    `json:"value"`
+	Warning              *float64   `json:"warning,omitempty"`
+	Critical             *float64   `json:"critical,omitempty"`
+	RetryState           string     `json:"retry_state,omitempty"`
+	RetryAttempt         *int       `json:"retry_attempt,omitempty"`
+	RecoverySuccessCount *int       `json:"recovery_success_count,omitempty"`
+	NextCheckAt          *time.Time `json:"next_check_at,omitempty"`
 
 	badness float64
 	index   int
@@ -176,7 +180,7 @@ func httpReasons(sample model.Sample, thresholds config.HTTPThresholds, serviceF
 
 func downloadReasons(sample model.Sample, thresholds map[string]config.Threshold) []monitoringReason {
 	if sampleFailed(sample) {
-		return []monitoringReason{failureReason("download_failure", "ok", sample.Name)}
+		return []monitoringReason{withDownloadRetryMetadata(failureReason("download_failure", "ok", sample.Name), sample)}
 	}
 	if sample.Mbps == nil {
 		return nil
@@ -189,7 +193,7 @@ func downloadReasons(sample model.Sample, thresholds map[string]config.Threshold
 	if !ok {
 		return nil
 	}
-	return []monitoringReason{reason}
+	return []monitoringReason{withDownloadRetryMetadata(reason, sample)}
 }
 
 func serviceGroupReasons(stats map[string]serviceStatusAggregate, thresholds config.ServiceThresholds) []monitoringReason {
@@ -272,6 +276,14 @@ func failureReasonWithLevel(code, level, metric, target string) monitoringReason
 		Value:   0,
 		badness: 1,
 	}
+}
+
+func withDownloadRetryMetadata(reason monitoringReason, sample model.Sample) monitoringReason {
+	reason.RetryState = sample.RetryState
+	reason.RetryAttempt = sample.RetryAttempt
+	reason.RecoverySuccessCount = sample.RecoverySuccessCount
+	reason.NextCheckAt = sample.NextCheckAt
+	return reason
 }
 
 func sampleFailed(sample model.Sample) bool {

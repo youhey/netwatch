@@ -42,4 +42,9 @@ type Sample struct {
 	DownloadedBytes *int64   `json:"downloaded_bytes,omitempty"`
 	BytesPerSec     *float64 `json:"bytes_per_sec,omitempty"`
 	Mbps            *float64 `json:"mbps,omitempty"`
+
+	RetryState           string     `json:"retry_state,omitempty"`
+	RetryAttempt         *int       `json:"retry_attempt,omitempty"`
+	RecoverySuccessCount *int       `json:"recovery_success_count,omitempty"`
+	NextCheckAt          *time.Time `json:"next_check_at,omitempty"`
 }
