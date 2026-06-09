@@ -242,6 +242,146 @@
       "category": "game",
       "url": "https://help.ea.com/en/server-status/",
       "interval_seconds": 300
+    },
+    {
+      "name": "github_home",
+      "label": "GitHub Home",
+      "display_order": 120,
+      "type": "http",
+      "group": "github",
+      "category": "dev",
+      "url": "https://github.com/",
+      "interval_seconds": 300,
+      "expected_statuses": [
+        200,
+        301,
+        302
+      ]
+    },
+    {
+      "name": "github_api",
+      "label": "GitHub API",
+      "display_order": 130,
+      "type": "http",
+      "group": "github",
+      "category": "dev",
+      "url": "https://api.github.com/",
+      "interval_seconds": 300,
+      "expected_statuses": [
+        200,
+        301,
+        302,
+        403
+      ]
+    },
+    {
+      "name": "chatgpt_home",
+      "label": "ChatGPT Home",
+      "display_order": 140,
+      "type": "http",
+      "group": "openai",
+      "category": "ai",
+      "url": "https://chatgpt.com/",
+      "interval_seconds": 300,
+      "expected_statuses": [
+        200,
+        301,
+        302,
+        403
+      ]
+    },
+    {
+      "name": "openai_api",
+      "label": "OpenAI API",
+      "display_order": 150,
+      "type": "http",
+      "group": "openai",
+      "category": "ai",
+      "url": "https://api.openai.com/v1/models",
+      "interval_seconds": 300,
+      "expected_statuses": [
+        200,
+        401,
+        403
+      ]
+    },
+    {
+      "name": "laravel_cloud",
+      "label": "Laravel Cloud",
+      "display_order": 160,
+      "type": "http",
+      "group": "laravel",
+      "category": "cloud",
+      "url": "https://cloud.laravel.com/",
+      "interval_seconds": 300,
+      "expected_statuses": [
+        200,
+        301,
+        302
+      ]
+    },
+    {
+      "name": "laravel_cloud_status",
+      "label": "Laravel Cloud Status",
+      "display_order": 170,
+      "type": "http",
+      "group": "laravel",
+      "category": "cloud",
+      "url": "https://status.laravel.cloud/",
+      "interval_seconds": 300,
+      "expected_statuses": [
+        200,
+        301,
+        302
+      ]
+    },
+    {
+      "name": "docker_registry",
+      "label": "Docker Registry",
+      "display_order": 180,
+      "type": "http",
+      "group": "docker",
+      "category": "container",
+      "url": "https://registry-1.docker.io/v2/",
+      "interval_seconds": 300,
+      "expected_statuses": [
+        200,
+        401
+      ]
+    },
+    {
+      "name": "docker_auth",
+      "label": "Docker Auth",
+      "display_order": 190,
+      "type": "http",
+      "group": "docker",
+      "category": "container",
+      "url": "https://auth.docker.io/",
+      "interval_seconds": 300,
+      "expected_statuses": [
+        200,
+        301,
+        302,
+        400,
+        401,
+        403,
+        404
+      ]
+    },
+    {
+      "name": "ghcr_registry",
+      "label": "GHCR Registry",
+      "display_order": 200,
+      "type": "http",
+      "group": "github",
+      "category": "container",
+      "url": "https://ghcr.io/v2/",
+      "interval_seconds": 300,
+      "expected_statuses": [
+        200,
+        401,
+        403
+      ]
     }
   ]
 }

@@ -62,18 +62,19 @@ type ServiceThresholds struct {
 }
 
 type TargetConfig struct {
-	Name            string `json:"name"`
-	Label           string `json:"label"`
-	Type            string `json:"type"`
-	Group           string `json:"group"`
-	Category        string `json:"category"`
-	Target          string `json:"target"`
-	Hostname        string `json:"hostname"`
-	URL             string `json:"url"`
-	Method          string `json:"method"`
-	IntervalSeconds int    `json:"interval_seconds"`
-	TimeoutSeconds  int    `json:"timeout_seconds"`
-	DisplayOrder    int    `json:"display_order"`
+	Name             string `json:"name"`
+	Label            string `json:"label"`
+	Type             string `json:"type"`
+	Group            string `json:"group"`
+	Category         string `json:"category"`
+	Target           string `json:"target"`
+	Hostname         string `json:"hostname"`
+	URL              string `json:"url"`
+	Method           string `json:"method"`
+	IntervalSeconds  int    `json:"interval_seconds"`
+	TimeoutSeconds   int    `json:"timeout_seconds"`
+	DisplayOrder     int    `json:"display_order"`
+	ExpectedStatuses []int  `json:"expected_statuses"`
 }
 
 type DownloadProbeConfig struct {
@@ -230,6 +231,9 @@ func (c Config) Validate() error {
 			if strings.TrimSpace(target.Category) != "" && strings.TrimSpace(target.Group) == "" {
 				return fmt.Errorf("targets[%d].group is required when category is set for http target", i)
 			}
+			if err := validateExpectedStatuses(target.ExpectedStatuses); err != nil {
+				return fmt.Errorf("targets[%d].expected_statuses is invalid: %w", i, err)
+			}
 		default:
 			return fmt.Errorf("targets[%d].type must be one of ping, dns, http", i)
 		}
@@ -278,6 +282,15 @@ func (c Config) Validate() error {
 		}
 	}
 
+	return nil
+}
+
+func validateExpectedStatuses(statuses []int) error {
+	for _, status := range statuses {
+		if status < 100 || status > 599 {
+			return errors.New("status codes must be between 100 and 599")
+		}
+	}
 	return nil
 }
 

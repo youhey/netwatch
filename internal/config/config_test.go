@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -98,6 +99,45 @@ func TestLoadPhase35Settings(t *testing.T) {
 	}
 	if cfg.DataDir != "/var/lib/netwatch" || cfg.RetentionDays != 7 || cfg.HTTPDisableKeepAlive || cfg.HTTPMaxBodyBytes != 131072 {
 		t.Fatalf("cfg = %+v, want Phase 3.5 settings loaded", cfg)
+	}
+}
+
+func TestLoadHTTPExpectedStatuses(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "netwatch.json")
+	content := `{
+  "listen_addr": "127.0.0.1:8080",
+  "data_dir": "/var/lib/netwatch",
+  "data_file_pattern": "samples-%Y-%m-%d.jsonl",
+  "retention_days": 7,
+  "targets": [
+    {
+      "name": "openai_api",
+      "type": "http",
+      "group": "openai",
+      "category": "ai",
+      "url": "https://api.openai.com/v1/models",
+      "expected_statuses": [200, 401, 403]
+    },
+    {
+      "name": "home",
+      "type": "http",
+      "url": "https://example.com/"
+    }
+  ]
+}`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !reflect.DeepEqual(cfg.Targets[0].ExpectedStatuses, []int{200, 401, 403}) {
+		t.Fatalf("ExpectedStatuses = %+v, want [200 401 403]", cfg.Targets[0].ExpectedStatuses)
+	}
+	if len(cfg.Targets[1].ExpectedStatuses) != 0 {
+		t.Fatalf("ExpectedStatuses = %+v, want empty for existing style target", cfg.Targets[1].ExpectedStatuses)
 	}
 }
 
@@ -355,6 +395,22 @@ func TestValidateHTTPURL(t *testing.T) {
 	}
 }
 
+func TestValidateHTTPExpectedStatuses(t *testing.T) {
+	cfg := Default()
+	cfg.Targets = []TargetConfig{
+		{Name: "bad", Type: "http", URL: "https://example.com/", ExpectedStatuses: []int{99}},
+	}
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() error = nil, want error")
+	}
+
+	cfg.Targets[0].ExpectedStatuses = []int{600}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() error = nil, want error")
+	}
+}
+
 func TestLoadExampleConfig(t *testing.T) {
 	cfg, err := Load(filepath.Join("..", "..", "configs", "netwatch.example.json"))
 	if err != nil {
@@ -367,6 +423,18 @@ func TestLoadExampleConfig(t *testing.T) {
 	if len(cfg.EnabledDownloadProbes()) != 2 {
 		t.Fatalf("len(EnabledDownloadProbes) = %d, want Phase 5 download probes", len(cfg.EnabledDownloadProbes()))
 	}
+	expectedTargets := map[string][]int{
+		"github_home":          {200, 301, 302},
+		"github_api":           {200, 301, 302, 403},
+		"chatgpt_home":         {200, 301, 302, 403},
+		"openai_api":           {200, 401, 403},
+		"laravel_cloud":        {200, 301, 302},
+		"laravel_cloud_status": {200, 301, 302},
+		"docker_registry":      {200, 401},
+		"docker_auth":          {200, 301, 302, 400, 401, 403, 404},
+		"ghcr_registry":        {200, 401, 403},
+	}
+	foundTargets := map[string]bool{}
 	found := false
 	foundSF6 := false
 	foundGatewayOrder := false
@@ -384,6 +452,12 @@ func TestLoadExampleConfig(t *testing.T) {
 		if target.Name == "sf6_buckler_info" {
 			foundSF6 = true
 		}
+		if expectedStatuses, ok := expectedTargets[target.Name]; ok {
+			foundTargets[target.Name] = true
+			if !reflect.DeepEqual(target.ExpectedStatuses, expectedStatuses) {
+				t.Fatalf("%s expected_statuses = %+v, want %+v", target.Name, target.ExpectedStatuses, expectedStatuses)
+			}
+		}
 	}
 	if !found {
 		t.Fatal("youtube_home Phase 3 target not found")
@@ -393,6 +467,11 @@ func TestLoadExampleConfig(t *testing.T) {
 	}
 	if !foundGatewayOrder || !foundGoogleOrder {
 		t.Fatal("example config display_order for ping targets not found")
+	}
+	for name := range expectedTargets {
+		if !foundTargets[name] {
+			t.Fatalf("%s target not found in example config", name)
+		}
 	}
 	probes := cfg.EnabledDownloadProbes()
 	if probes[0].Name != "r2_1mb" || probes[0].Label != "R2 1MB" || probes[0].DisplayOrder != 10 || probes[1].Name != "r2_10mb" || probes[1].Label != "R2 10MB" || probes[1].DisplayOrder != 20 {

@@ -43,7 +43,7 @@ func NewHTTP(disableKeepAlive bool, maxBodyBytes int64) HTTP {
 	}
 }
 
-func (p HTTP) Get(ctx context.Context, url string) (HTTPResult, error) {
+func (p HTTP) Get(ctx context.Context, url string, expectedStatuses []int) (HTTPResult, error) {
 	client := p.Client
 	if client == nil {
 		client = &http.Client{
@@ -115,7 +115,7 @@ func (p HTTP) Get(ctx context.Context, url string) (HTTPResult, error) {
 
 	status := resp.StatusCode
 	result.HTTPStatus = &status
-	result.OK = status >= 200 && status < 400
+	result.OK = httpStatusOK(status, expectedStatuses)
 	if resp.ContentLength >= 0 {
 		result.ContentLength = &resp.ContentLength
 	}
@@ -138,6 +138,18 @@ func (p HTTP) Get(ctx context.Context, url string) (HTTPResult, error) {
 	}
 
 	return result, nil
+}
+
+func httpStatusOK(status int, expectedStatuses []int) bool {
+	if len(expectedStatuses) == 0 {
+		return status >= 200 && status < 400
+	}
+	for _, expectedStatus := range expectedStatuses {
+		if status == expectedStatus {
+			return true
+		}
+	}
+	return false
 }
 
 func durationMs(start, end time.Time) float64 {

@@ -23,7 +23,7 @@ type DNSProbe interface {
 }
 
 type HTTPProbe interface {
-	Get(ctx context.Context, url string) (probe.HTTPResult, error)
+	Get(ctx context.Context, url string, expectedStatuses []int) (probe.HTTPResult, error)
 }
 
 type DownloadProbe interface {
@@ -227,7 +227,7 @@ func (c *Collector) measureHTTP(ctx context.Context, target config.TargetConfig)
 	httpCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	result, err := c.http.Get(httpCtx, target.URL)
+	result, err := c.http.Get(httpCtx, target.URL, target.ExpectedStatuses)
 	if err != nil {
 		sample.Error = err.Error()
 	}

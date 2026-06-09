@@ -11,7 +11,8 @@ import (
 )
 
 type fakeHTTPProbe struct {
-	deadline time.Time
+	deadline         time.Time
+	expectedStatuses []int
 }
 
 type fakeDownloadProbe struct {
@@ -22,11 +23,12 @@ type fakeStorage struct {
 	samples []model.Sample
 }
 
-func (p *fakeHTTPProbe) Get(ctx context.Context, url string) (probe.HTTPResult, error) {
+func (p *fakeHTTPProbe) Get(ctx context.Context, url string, expectedStatuses []int) (probe.HTTPResult, error) {
 	deadline, ok := ctx.Deadline()
 	if ok {
 		p.deadline = deadline
 	}
+	p.expectedStatuses = append([]int(nil), expectedStatuses...)
 	status := 200
 	return probe.HTTPResult{
 		OK:         true,
@@ -66,6 +68,10 @@ func TestMeasureHTTPUsesTargetMetadataAndTimeout(t *testing.T) {
 		URL:            "https://www.youtube.com/",
 		TimeoutSeconds: 3,
 		DisplayOrder:   10,
+		ExpectedStatuses: []int{
+			200,
+			401,
+		},
 	}
 	collector := New(cfg, nil, nil, httpProbe, nil, nil, NewState())
 
@@ -78,6 +84,9 @@ func TestMeasureHTTPUsesTargetMetadataAndTimeout(t *testing.T) {
 	}
 	if sample.TotalMs == nil || *sample.TotalMs != 12.3 {
 		t.Fatalf("TotalMs = %v, want 12.3", sample.TotalMs)
+	}
+	if len(httpProbe.expectedStatuses) != 2 || httpProbe.expectedStatuses[0] != 200 || httpProbe.expectedStatuses[1] != 401 {
+		t.Fatalf("expectedStatuses = %+v, want target expected_statuses", httpProbe.expectedStatuses)
 	}
 	if httpProbe.deadline.Before(before.Add(2*time.Second)) || remaining > 3*time.Second {
 		t.Fatalf("deadline remaining = %v, want target timeout around 3s", remaining)

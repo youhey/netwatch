@@ -2,6 +2,7 @@ package probe
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -19,7 +20,7 @@ func TestHTTPGetOK(t *testing.T) {
 	}))
 	defer server.Close()
 
-	result, err := HTTP{}.Get(context.Background(), server.URL)
+	result, err := HTTP{}.Get(context.Background(), server.URL, nil)
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
@@ -69,7 +70,7 @@ func TestHTTPGetNoContent(t *testing.T) {
 	}))
 	defer server.Close()
 
-	result, err := HTTP{}.Get(context.Background(), server.URL)
+	result, err := HTTP{}.Get(context.Background(), server.URL, nil)
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
@@ -87,7 +88,7 @@ func TestHTTPGetForbidden(t *testing.T) {
 	}))
 	defer server.Close()
 
-	result, err := HTTP{}.Get(context.Background(), server.URL)
+	result, err := HTTP{}.Get(context.Background(), server.URL, nil)
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
@@ -105,7 +106,7 @@ func TestHTTPGetServerError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	result, err := HTTP{}.Get(context.Background(), server.URL)
+	result, err := HTTP{}.Get(context.Background(), server.URL, nil)
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
@@ -123,7 +124,7 @@ func TestHTTPGetBodyLimit(t *testing.T) {
 	}))
 	defer server.Close()
 
-	result, err := HTTP{MaxBodyBytes: 5}.Get(context.Background(), server.URL)
+	result, err := HTTP{MaxBodyBytes: 5}.Get(context.Background(), server.URL, nil)
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
@@ -144,7 +145,7 @@ func TestHTTPGetTLS(t *testing.T) {
 	}))
 	defer server.Close()
 
-	result, err := HTTP{Client: server.Client()}.Get(context.Background(), server.URL)
+	result, err := HTTP{Client: server.Client()}.Get(context.Background(), server.URL, nil)
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
@@ -166,7 +167,7 @@ func TestHTTPGetTimeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
 	defer cancel()
 
-	result, err := HTTP{}.Get(ctx, server.URL)
+	result, err := HTTP{}.Get(ctx, server.URL, nil)
 	if err == nil {
 		t.Fatal("Get() error = nil, want error")
 	}
@@ -176,4 +177,80 @@ func TestHTTPGetTimeout(t *testing.T) {
 	if result.TotalMs < 0 {
 		t.Fatalf("TotalMs = %v, want >= 0", result.TotalMs)
 	}
+}
+
+func TestHTTPGetExpectedStatuses(t *testing.T) {
+	tests := []struct {
+		name             string
+		status           int
+		expectedStatuses []int
+		wantOK           bool
+	}{
+		{name: "expected 200", status: http.StatusOK, expectedStatuses: []int{http.StatusOK}, wantOK: true},
+		{name: "expected 301", status: http.StatusMovedPermanently, expectedStatuses: []int{http.StatusOK, http.StatusMovedPermanently}, wantOK: true},
+		{name: "expected 302", status: http.StatusFound, expectedStatuses: []int{http.StatusOK, http.StatusFound}, wantOK: true},
+		{name: "expected 401", status: http.StatusUnauthorized, expectedStatuses: []int{http.StatusOK, http.StatusUnauthorized}, wantOK: true},
+		{name: "expected 403", status: http.StatusForbidden, expectedStatuses: []int{http.StatusOK, http.StatusForbidden}, wantOK: true},
+		{name: "unexpected status", status: http.StatusNotFound, expectedStatuses: []int{http.StatusOK}, wantOK: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tt.status == http.StatusMovedPermanently || tt.status == http.StatusFound {
+					w.Header().Set("Location", "/next")
+				}
+				w.WriteHeader(tt.status)
+			}))
+			defer server.Close()
+
+			client := server.Client()
+			client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			}
+
+			result, err := HTTP{Client: client}.Get(context.Background(), server.URL, tt.expectedStatuses)
+			if err != nil {
+				t.Fatalf("Get() error = %v", err)
+			}
+			if result.OK != tt.wantOK {
+				t.Fatalf("OK = %v, want %v", result.OK, tt.wantOK)
+			}
+			if result.HTTPStatus == nil || *result.HTTPStatus != tt.status {
+				t.Fatalf("HTTPStatus = %v, want %d", result.HTTPStatus, tt.status)
+			}
+		})
+	}
+}
+
+func TestHTTPGetTransportErrorsFail(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{name: "dns error", err: errors.New("lookup example.invalid: no such host")},
+		{name: "tls error", err: errors.New("tls handshake failure")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				return nil, tt.err
+			})}
+
+			result, err := HTTP{Client: client}.Get(context.Background(), "https://example.invalid/", []int{http.StatusOK})
+			if err == nil {
+				t.Fatal("Get() error = nil, want error")
+			}
+			if result.OK {
+				t.Fatal("OK = true, want false")
+			}
+		})
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }
