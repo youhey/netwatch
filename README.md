@@ -349,6 +349,37 @@ sudo systemctl status netwatch
 
 systemd unit は [deploy/systemd/netwatch.service](deploy/systemd/netwatch.service) にあります。
 
+## メンテナンスコマンド
+
+`netwatch-jsonl` は保存済み JSONL を修正するための補助コマンドです。group 名を変更したい場合は、`rename-group` に旧 group 名と新 group 名を渡します。対象行以外と JSON として読めない行はそのまま保持し、実行時は変更したファイルごとにバックアップを作ります。
+
+```bash
+make build-armv6
+scp dist/netwatch-jsonl-linux-armv6 pi@raspberrypi.local:/tmp/netwatch-jsonl-linux-armv6
+ssh pi@raspberrypi.local
+sudo install -m 0755 /tmp/netwatch-jsonl-linux-armv6 /usr/local/bin/netwatch-jsonl
+```
+
+実行前に dry-run で変更対象数を確認します。
+
+```bash
+sudo netwatch-jsonl rename-group -data-dir /var/lib/netwatch -dry-run pcgame pc_game
+```
+
+問題なければ `netwatch` を止めてから実行し、完了後に再起動します。
+
+```bash
+sudo systemctl stop netwatch
+sudo netwatch-jsonl rename-group -data-dir /var/lib/netwatch pcgame pc_game
+sudo systemctl start netwatch
+```
+
+単一ファイルだけを対象にする場合は `-path` を使います。
+
+```bash
+sudo netwatch-jsonl rename-group -path /var/lib/netwatch/samples-2026-06-09.jsonl pcgame pc_game
+```
+
 ## API
 
 ヘルスチェック:
