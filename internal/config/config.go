@@ -26,6 +26,7 @@ type Config struct {
 	HTTPMaxBodyBytes     int64                 `json:"http_max_body_bytes"`
 	MonitoringThresholds MonitoringThresholds  `json:"monitoring_thresholds"`
 	DownloadProbes       []DownloadProbeConfig `json:"download_probes"`
+	StatusPages          []StatusPageConfig    `json:"status_pages"`
 	Targets              []TargetConfig        `json:"targets"`
 }
 
@@ -87,6 +88,19 @@ type DownloadProbeConfig struct {
 	Enabled         bool               `json:"enabled"`
 	DisplayOrder    int                `json:"display_order"`
 	RetryOnAlert    RetryOnAlertConfig `json:"retry_on_alert"`
+}
+
+type StatusPageConfig struct {
+	Name                string   `json:"name"`
+	Label               string   `json:"label"`
+	DisplayOrder        int      `json:"display_order"`
+	Type                string   `json:"type"`
+	Provider            string   `json:"provider"`
+	Group               string   `json:"group"`
+	Category            string   `json:"category"`
+	URL                 string   `json:"url"`
+	IntervalSeconds     int      `json:"interval_seconds"`
+	ImportantComponents []string `json:"important_components"`
 }
 
 type RetryOnAlertConfig struct {
@@ -199,7 +213,7 @@ func (c Config) Validate() error {
 		return errors.New("targets must not be empty")
 	}
 
-	names := make(map[string]struct{}, len(c.Targets)+len(c.DownloadProbes))
+	names := make(map[string]struct{}, len(c.Targets)+len(c.DownloadProbes)+len(c.StatusPages))
 	for i, target := range c.Targets {
 		if strings.TrimSpace(target.Name) == "" {
 			return fmt.Errorf("targets[%d].name is required", i)
@@ -279,6 +293,40 @@ func (c Config) Validate() error {
 		}
 		if err := validateRetryOnAlert(downloadProbe); err != nil {
 			return fmt.Errorf("download_probes[%d].retry_on_alert is invalid: %w", i, err)
+		}
+	}
+
+	for i, statusPage := range c.StatusPages {
+		if strings.TrimSpace(statusPage.Name) == "" {
+			return fmt.Errorf("status_pages[%d].name is required", i)
+		}
+		if _, ok := names[statusPage.Name]; ok {
+			return fmt.Errorf("duplicate target name: %s", statusPage.Name)
+		}
+		names[statusPage.Name] = struct{}{}
+		if statusPage.Type != "" && statusPage.Type != "status_page" {
+			return fmt.Errorf("status_pages[%d].type must be status_page", i)
+		}
+		if strings.TrimSpace(statusPage.Provider) != "statuspage" {
+			return fmt.Errorf("status_pages[%d].provider must be statuspage", i)
+		}
+		if strings.TrimSpace(statusPage.Group) == "" {
+			return fmt.Errorf("status_pages[%d].group is required", i)
+		}
+		if strings.TrimSpace(statusPage.Category) == "" {
+			return fmt.Errorf("status_pages[%d].category is required", i)
+		}
+		if strings.TrimSpace(statusPage.URL) == "" {
+			return fmt.Errorf("status_pages[%d].url is required", i)
+		}
+		if err := validateHTTPURL(statusPage.URL); err != nil {
+			return fmt.Errorf("status_pages[%d].url is invalid: %w", i, err)
+		}
+		if statusPage.IntervalSeconds < 0 {
+			return fmt.Errorf("status_pages[%d].interval_seconds must be greater than or equal to 0", i)
+		}
+		if statusPage.DisplayOrder < 0 {
+			return fmt.Errorf("status_pages[%d].display_order must be greater than or equal to 0", i)
 		}
 	}
 
@@ -426,6 +474,13 @@ func (c Config) EnabledDownloadProbes() []DownloadProbeConfig {
 		probes = append(probes, probe)
 	}
 	return probes
+}
+
+func (c Config) StatusPageIntervalSeconds(statusPage StatusPageConfig) int {
+	if statusPage.IntervalSeconds > 0 {
+		return statusPage.IntervalSeconds
+	}
+	return 300
 }
 
 func (p DownloadProbeConfig) EffectiveRetryOnAlert() RetryOnAlertConfig {

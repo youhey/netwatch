@@ -94,6 +94,50 @@ func TestDownloadLatest(t *testing.T) {
 	assertSampleCount(t, rec, 1)
 }
 
+func TestStatusPagesLatest(t *testing.T) {
+	handler := newTestHandler()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/status-pages/latest", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var body statusPagesLatestBody
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if len(body.Providers) != 1 {
+		t.Fatalf("len(providers) = %d, want 1", len(body.Providers))
+	}
+	provider := body.Providers[0]
+	if provider.Name != "github_status" || provider.Label != "GitHub Status" || provider.Level != "ok" || !provider.OK || provider.Indicator != "none" || len(provider.Components) != 1 {
+		t.Fatalf("provider = %+v, want github status page", provider)
+	}
+}
+
+func TestSummaryIncludesProviderStatus(t *testing.T) {
+	handler := newTestHandler()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/summary", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var body struct {
+		ProviderStatus providerStatusSummaryResponse `json:"provider_status"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if body.ProviderStatus.Level != "ok" || !body.ProviderStatus.OK || body.ProviderStatus.Providers != 1 {
+		t.Fatalf("provider_status = %+v, want ok summary", body.ProviderStatus)
+	}
+}
+
 func TestDownloadLatestIncludesRetryMetadata(t *testing.T) {
 	state := collector.NewState()
 	ok := true
@@ -561,6 +605,48 @@ func TestMonitoringStatusWarnsOnDownloadSlow(t *testing.T) {
 	}
 }
 
+func TestMonitoringStatusWarnsOnProviderStatus(t *testing.T) {
+	state := collector.NewState()
+	failed := false
+	state.Load([]model.Sample{
+		{Timestamp: time.Now(), Type: "status_page", Name: "github_status", OK: &failed, Level: "critical", Indicator: "major"},
+	})
+	handler := New(state, "test").Routes()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/monitoring/status", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	var body monitoringStatusResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if body.Level != "warning" || body.PrimaryReason == nil || body.PrimaryReason.Code != "provider_status" {
+		t.Fatalf("body = %+v, want provider status warning", body)
+	}
+}
+
+func TestMonitoringStatusIgnoresUnknownProviderStatus(t *testing.T) {
+	state := collector.NewState()
+	failed := false
+	state.Load([]model.Sample{
+		{Timestamp: time.Now(), Type: "status_page", Name: "github_status", OK: &failed, Level: "unknown", Error: "request timeout"},
+	})
+	handler := New(state, "test").Routes()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/monitoring/status", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	var body monitoringStatusResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if body.Level != "ok" || body.Alert {
+		t.Fatalf("body = %+v, want unknown provider ignored by monitoring status", body)
+	}
+}
+
 func TestMonitoringStatusOK(t *testing.T) {
 	state := collector.NewState()
 	ok := true
@@ -624,6 +710,7 @@ func newTestHandler() http.Handler {
 		{Timestamp: now, Type: "http", Group: "steam", Category: "service", Name: "steam_store", DisplayOrder: 90, URL: "https://store.steampowered.com/", Method: "GET", OK: &failed, TotalMs: floatPtr(0), Error: "timeout"},
 		{Timestamp: now, Type: "http", Group: "pcgame", Category: "game", Name: "sf6_buckler_info", DisplayOrder: 110, URL: "https://www.streetfighter.com/6/buckler/en/information/all/1", Method: "GET", OK: &failed, HTTPStatus: intPtr(http.StatusForbidden), TotalMs: floatPtr(0)},
 		{Timestamp: now, Type: "download", Name: "r2_1mb", DisplayOrder: 10, URL: "https://pub-66e2ade26de745138962434a04cb1a46.r2.dev/netwatch-1mb.bin", OK: &ok, ExpectedBytes: &expectedBytes, DownloadedBytes: &downloadedBytes, DurationMs: floatPtr(1000), BytesPerSec: floatPtr(1048576), Mbps: floatPtr(8.388608)},
+		{Timestamp: now, Type: "status_page", Group: "github", Category: "dev", Name: "github_status", DisplayOrder: 10, OK: &ok, Level: "ok", Indicator: "none", Description: "All Systems Operational", DurationMs: floatPtr(123), Components: []model.StatusPageComponent{{Name: "API Requests", Status: "operational", Level: "ok", Important: true}}},
 	})
 	targets := []config.TargetConfig{
 		{Name: "gateway", Label: "Gateway", DisplayOrder: 10, Type: "ping", Target: "192.168.1.1"},
@@ -638,7 +725,10 @@ func newTestHandler() http.Handler {
 		{Name: "r2_1mb", Label: "R2 1MB", DisplayOrder: 10, URL: "https://pub-66e2ade26de745138962434a04cb1a46.r2.dev/netwatch-1mb.bin", ExpectedBytes: 1048576, IntervalSeconds: 600, TimeoutSeconds: 20, Enabled: true},
 		{Name: "r2_10mb", Label: "R2 10MB", DisplayOrder: 20, URL: "https://pub-66e2ade26de745138962434a04cb1a46.r2.dev/netwatch-10mb.bin", ExpectedBytes: 10485760, IntervalSeconds: 3600, TimeoutSeconds: 60, Enabled: true},
 	}
-	return New(state, "test", targets).WithDownloadProbes(downloadProbes).Routes()
+	statusPages := []config.StatusPageConfig{
+		{Name: "github_status", Label: "GitHub Status", DisplayOrder: 10, Type: "status_page", Provider: "statuspage", Group: "github", Category: "dev", URL: "https://www.githubstatus.com/api/v2/summary.json"},
+	}
+	return New(state, "test", targets).WithDownloadProbes(downloadProbes).WithStatusPages(statusPages).Routes()
 }
 
 func assertSampleCount(t *testing.T, rec *httptest.ResponseRecorder, want int) {

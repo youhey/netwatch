@@ -105,6 +105,8 @@ func collectMonitoringReasons(samples []model.Sample, thresholds config.Monitori
 			reasons = append(reasons, httpReasons(sample, thresholds.HTTP, serviceFailures)...)
 		case "download":
 			reasons = append(reasons, downloadReasons(sample, thresholds.Download)...)
+		case "status_page":
+			reasons = append(reasons, statusPageReasons(sample)...)
 		}
 	}
 
@@ -194,6 +196,22 @@ func downloadReasons(sample model.Sample, thresholds map[string]config.Threshold
 		return nil
 	}
 	return []monitoringReason{withDownloadRetryMetadata(reason, sample)}
+}
+
+func statusPageReasons(sample model.Sample) []monitoringReason {
+	switch statusPageLevel(sample) {
+	case "critical", "warning":
+		return []monitoringReason{{
+			Code:    "provider_status",
+			Level:   "warning",
+			Target:  sample.Name,
+			Metric:  "level",
+			Value:   1,
+			badness: 1,
+		}}
+	default:
+		return nil
+	}
 }
 
 func serviceGroupReasons(stats map[string]serviceStatusAggregate, thresholds config.ServiceThresholds) []monitoringReason {
@@ -340,6 +358,7 @@ func reasonPriority(code string) int {
 		"http_slow":              100,
 		"service_failure":        110,
 		"service_group_degraded": 120,
+		"provider_status":        130,
 	}
 	if priority, ok := priorities[code]; ok {
 		return priority
@@ -384,6 +403,8 @@ func reasonMessage(reason monitoringReason) string {
 		return fmt.Sprintf("download %s failure", reason.Target)
 	case "download_slow":
 		return fmt.Sprintf("download %s %.1fMbps", reason.Target, reason.Value)
+	case "provider_status":
+		return fmt.Sprintf("provider %s status", reason.Target)
 	default:
 		return reason.Code
 	}

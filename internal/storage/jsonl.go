@@ -117,6 +117,9 @@ func (s *JSONL) loadPathLocked(path string) ([]model.Sample, error) {
 			log.Printf("skip invalid JSONL line: path=%s line=%d error=%v", path, lineNumber, err)
 			continue
 		}
+		if sample.Type == "" && sample.Kind != "" {
+			sample.Type = sample.Kind
+		}
 		samples = append(samples, sample)
 	}
 	if err := scanner.Err(); err != nil {

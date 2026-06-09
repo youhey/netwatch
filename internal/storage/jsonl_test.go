@@ -19,6 +19,7 @@ not-json
 {"ts":"` + now.Format(time.RFC3339Nano) + `","type":"http","name":"home","url":"https://example.com/","method":"GET","ok":true,"http_status":200,"total_ms":45.6}
 {"ts":"` + now.Format(time.RFC3339Nano) + `","type":"http","group":"youtube","category":"service","name":"youtube_home","url":"https://www.youtube.com/","method":"GET","ok":true,"http_status":200,"total_ms":312.4}
 {"ts":"` + now.Format(time.RFC3339Nano) + `","type":"download","name":"r2_1mb","url":"https://example.com/netwatch-1mb.bin","expected_bytes":1048576,"downloaded_bytes":1048576,"duration_ms":1000,"bytes_per_sec":1048576,"mbps":8.388608,"ok":true}
+{"ts":"` + now.Format(time.RFC3339Nano) + `","kind":"status_page","name":"github_status","group":"github","provider":"statuspage","level":"ok","indicator":"none","description":"All Systems Operational","ok":true,"components":[{"name":"API Requests","status":"operational","level":"ok","important":true}]}
 `
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
@@ -28,14 +29,14 @@ not-json
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if len(samples) != 5 {
-		t.Fatalf("len(samples) = %d, want 5", len(samples))
+	if len(samples) != 6 {
+		t.Fatalf("len(samples) = %d, want 6", len(samples))
 	}
 
 	state := collector.NewState()
 	state.Load(samples)
-	if len(state.LatestByType("ping")) != 1 || len(state.LatestByType("dns")) != 1 || len(state.LatestByType("http")) != 2 || len(state.LatestByType("download")) != 1 {
-		t.Fatalf("latest counts = ping:%d dns:%d http:%d download:%d, want ping:1 dns:1 http:2 download:1", len(state.LatestByType("ping")), len(state.LatestByType("dns")), len(state.LatestByType("http")), len(state.LatestByType("download")))
+	if len(state.LatestByType("ping")) != 1 || len(state.LatestByType("dns")) != 1 || len(state.LatestByType("http")) != 2 || len(state.LatestByType("download")) != 1 || len(state.LatestByType("status_page")) != 1 {
+		t.Fatalf("latest counts = ping:%d dns:%d http:%d download:%d status_page:%d, want ping:1 dns:1 http:2 download:1 status_page:1", len(state.LatestByType("ping")), len(state.LatestByType("dns")), len(state.LatestByType("http")), len(state.LatestByType("download")), len(state.LatestByType("status_page")))
 	}
 	if services := state.LatestServices(); len(services) != 1 || services[0].Group != "youtube" || services[0].Category != "service" {
 		t.Fatalf("LatestServices() = %+v, want youtube service", services)
@@ -61,6 +62,7 @@ func TestAppendMixedSamples(t *testing.T) {
 		{Timestamp: time.Now().UTC(), Type: "dns", Name: "dns", Hostname: "example.com", OK: &ok, DurationMs: &duration},
 		{Timestamp: time.Now().UTC(), Type: "http", Group: "youtube", Category: "service", Name: "http", URL: "https://example.com/", Method: "GET", OK: &ok, HTTPStatus: &status, TotalMs: &total},
 		{Timestamp: time.Now().UTC(), Type: "download", Name: "r2_1mb", URL: "https://example.com/netwatch-1mb.bin", ExpectedBytes: &expectedBytes, DownloadedBytes: &downloadedBytes, DurationMs: &duration, Mbps: &mbps, OK: &ok, RetryState: "degraded", RetryAttempt: &retryAttempt, RecoverySuccessCount: &recoverySuccessCount, NextCheckAt: &nextCheckAt},
+		{Timestamp: time.Now().UTC(), Type: "status_page", Group: "github", Category: "dev", Name: "github_status", Provider: "statuspage", URL: "https://www.githubstatus.com/api/v2/summary.json", OK: &ok, Level: "ok", Indicator: "none", Description: "All Systems Operational", DurationMs: &duration, Components: []model.StatusPageComponent{{Name: "API Requests", Status: "operational", Level: "ok", Important: true}}},
 	}
 	for _, sample := range samples {
 		if err := jsonl.Append(sample); err != nil {
@@ -72,8 +74,8 @@ func TestAppendMixedSamples(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if len(loaded) != 4 {
-		t.Fatalf("len(loaded) = %d, want 4", len(loaded))
+	if len(loaded) != 5 {
+		t.Fatalf("len(loaded) = %d, want 5", len(loaded))
 	}
 	if loaded[2].Group != "youtube" || loaded[2].Category != "service" {
 		t.Fatalf("loaded[2] = %+v, want group/category restored", loaded[2])
@@ -83,6 +85,9 @@ func TestAppendMixedSamples(t *testing.T) {
 	}
 	if loaded[3].RetryState != "degraded" || loaded[3].RetryAttempt == nil || *loaded[3].RetryAttempt != retryAttempt || loaded[3].RecoverySuccessCount == nil || *loaded[3].RecoverySuccessCount != recoverySuccessCount || loaded[3].NextCheckAt == nil || !loaded[3].NextCheckAt.Equal(nextCheckAt) {
 		t.Fatalf("loaded[3] = %+v, want retry metadata restored", loaded[3])
+	}
+	if loaded[4].Level != "ok" || loaded[4].Provider != "statuspage" || len(loaded[4].Components) != 1 || !loaded[4].Components[0].Important {
+		t.Fatalf("loaded[4] = %+v, want status page restored", loaded[4])
 	}
 }
 

@@ -3,6 +3,8 @@ package api
 import (
 	"fmt"
 	"time"
+
+	"github.com/youhey/netwatch/internal/model"
 )
 
 const (
@@ -18,16 +20,17 @@ type monitoringCompactSupportResponse struct {
 }
 
 type monitoringCompactResponse struct {
-	Source        string                   `json:"source"`
-	GeneratedAt   time.Time                `json:"generated_at"`
-	Level         string                   `json:"level"`
-	Label         string                   `json:"label"`
-	Alert         bool                     `json:"alert"`
-	Title         string                   `json:"title"`
-	Message       string                   `json:"message"`
-	IssueCount    int                      `json:"issue_count"`
-	PrimaryReason *monitoringCompactReason `json:"primary_reason"`
-	History       monitoringCompactHistory `json:"history"`
+	Source         string                        `json:"source"`
+	GeneratedAt    time.Time                     `json:"generated_at"`
+	Level          string                        `json:"level"`
+	Label          string                        `json:"label"`
+	Alert          bool                          `json:"alert"`
+	Title          string                        `json:"title"`
+	Message        string                        `json:"message"`
+	IssueCount     int                           `json:"issue_count"`
+	PrimaryReason  *monitoringCompactReason      `json:"primary_reason"`
+	History        monitoringCompactHistory      `json:"history"`
+	ProviderStatus compactProviderStatusResponse `json:"provider_status"`
 }
 
 type monitoringCompactReason struct {
@@ -58,18 +61,23 @@ func monitoringCompactSupport() monitoringCompactSupportResponse {
 	}
 }
 
-func buildMonitoringCompact(status monitoringStatusResponse, history monitoringStatusHistoryResponse, generatedAt time.Time) monitoringCompactResponse {
+func buildMonitoringCompact(status monitoringStatusResponse, history monitoringStatusHistoryResponse, generatedAt time.Time, providerSamples ...[]model.Sample) monitoringCompactResponse {
+	var statusPageSamples []model.Sample
+	if len(providerSamples) > 0 {
+		statusPageSamples = providerSamples[0]
+	}
 	return monitoringCompactResponse{
-		Source:        "netwatch",
-		GeneratedAt:   generatedAt,
-		Level:         status.Level,
-		Label:         compactLabel(status.Level),
-		Alert:         status.Alert,
-		Title:         compactTitle(status.Level),
-		Message:       compactMessage(status.Level, status.PrimaryReason),
-		IssueCount:    len(status.Reasons),
-		PrimaryReason: compactReason(status.PrimaryReason),
-		History:       compactHistory(history),
+		Source:         "netwatch",
+		GeneratedAt:    generatedAt,
+		Level:          status.Level,
+		Label:          compactLabel(status.Level),
+		Alert:          status.Alert,
+		Title:          compactTitle(status.Level),
+		Message:        compactMessage(status.Level, status.PrimaryReason),
+		IssueCount:     len(status.Reasons),
+		PrimaryReason:  compactReason(status.PrimaryReason),
+		History:        compactHistory(history),
+		ProviderStatus: compactProviderStatus(statusPageSamples),
 	}
 }
 
@@ -156,6 +164,8 @@ func compactMessage(level string, reason *monitoringReason) string {
 		return fmt.Sprintf("Download probe is failing on %s.", reason.Target)
 	case "download_slow":
 		return fmt.Sprintf("Download throughput is below the %s threshold on %s.", reason.Level, reason.Target)
+	case "provider_status":
+		return fmt.Sprintf("Provider status is reporting an issue on %s.", reason.Target)
 	default:
 		return reasonMessage(*reason)
 	}

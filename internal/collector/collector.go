@@ -30,39 +30,54 @@ type DownloadProbe interface {
 	Get(ctx context.Context, url string, expectedBytes int64) (probe.DownloadResult, error)
 }
 
-type Collector struct {
-	cfg             config.Config
-	ping            PingProbe
-	dns             DNSProbe
-	http            HTTPProbe
-	download        DownloadProbe
-	storage         Storage
-	state           *State
-	downloadRetries map[string]*downloadRetryRuntime
+type StatusPageProbe interface {
+	Get(ctx context.Context, url string, importantComponents []string) (probe.StatusPageResult, error)
 }
 
-func New(cfg config.Config, ping PingProbe, dns DNSProbe, http HTTPProbe, download DownloadProbe, storage Storage, state *State) *Collector {
+type Collector struct {
+	cfg                  config.Config
+	ping                 PingProbe
+	dns                  DNSProbe
+	http                 HTTPProbe
+	download             DownloadProbe
+	statusPage           StatusPageProbe
+	storage              Storage
+	state                *State
+	downloadRetries      map[string]*downloadRetryRuntime
+	lastStatusPageLevels map[string]string
+}
+
+func New(cfg config.Config, ping PingProbe, dns DNSProbe, http HTTPProbe, download DownloadProbe, storage Storage, state *State, statusPage ...StatusPageProbe) *Collector {
+	var statusPageProbe StatusPageProbe
+	if len(statusPage) > 0 {
+		statusPageProbe = statusPage[0]
+	}
 	return &Collector{
-		cfg:             cfg,
-		ping:            ping,
-		dns:             dns,
-		http:            http,
-		download:        download,
-		storage:         storage,
-		state:           state,
-		downloadRetries: make(map[string]*downloadRetryRuntime),
+		cfg:                  cfg,
+		ping:                 ping,
+		dns:                  dns,
+		http:                 http,
+		download:             download,
+		statusPage:           statusPageProbe,
+		storage:              storage,
+		state:                state,
+		downloadRetries:      make(map[string]*downloadRetryRuntime),
+		lastStatusPageLevels: make(map[string]string),
 	}
 }
 
 func (c *Collector) Run(ctx context.Context) {
 	downloadProbes := c.cfg.EnabledDownloadProbes()
-	nextRuns := make(map[string]time.Time, len(c.cfg.Targets)+len(downloadProbes))
+	nextRuns := make(map[string]time.Time, len(c.cfg.Targets)+len(downloadProbes)+len(c.cfg.StatusPages))
 	now := time.Now()
 	for _, target := range c.cfg.Targets {
 		nextRuns["target:"+target.Name] = now
 	}
 	for _, downloadProbe := range downloadProbes {
 		nextRuns["download:"+downloadProbe.Name] = now
+	}
+	for _, statusPage := range c.cfg.StatusPages {
+		nextRuns["status_page:"+statusPage.Name] = now
 	}
 
 	ticker := time.NewTicker(time.Second)
@@ -98,6 +113,15 @@ func (c *Collector) collectDue(ctx context.Context, nextRuns map[string]time.Tim
 
 		nextRuns[key] = c.collectDownload(ctx, downloadProbe, now)
 	}
+	for _, statusPage := range c.cfg.StatusPages {
+		key := "status_page:" + statusPage.Name
+		if now.Before(nextRuns[key]) {
+			continue
+		}
+
+		c.collectStatusPage(ctx, statusPage)
+		nextRuns[key] = now.Add(time.Duration(c.cfg.StatusPageIntervalSeconds(statusPage)) * time.Second)
+	}
 }
 
 func (c *Collector) collectTarget(ctx context.Context, target config.TargetConfig) {
@@ -118,6 +142,16 @@ func (c *Collector) collectDownload(ctx context.Context, downloadProbe config.Do
 	}
 	c.state.Add(sample)
 	return nextCheckAt
+}
+
+func (c *Collector) collectStatusPage(ctx context.Context, statusPage config.StatusPageConfig) {
+	sample := c.measureStatusPage(ctx, statusPage)
+	c.logStatusPageChange(sample)
+	if err := c.storage.Append(sample); err != nil {
+		log.Printf("append sample failed: type=%s name=%s error=%v", sample.Type, sample.Name, err)
+		return
+	}
+	c.state.Add(sample)
 }
 
 func (c *Collector) measure(ctx context.Context, target config.TargetConfig) model.Sample {
@@ -275,6 +309,77 @@ func (c *Collector) measureDownload(ctx context.Context, downloadProbe config.Do
 	sample.Mbps = &result.Mbps
 
 	return sample
+}
+
+func (c *Collector) measureStatusPage(ctx context.Context, statusPage config.StatusPageConfig) model.Sample {
+	sample := model.Sample{
+		Timestamp:    time.Now().Local(),
+		Kind:         "status_page",
+		Type:         "status_page",
+		Name:         statusPage.Name,
+		Group:        statusPage.Group,
+		Category:     statusPage.Category,
+		DisplayName:  statusPage.Label,
+		DisplayOrder: statusPage.DisplayOrder,
+		Provider:     statusPage.Provider,
+		URL:          statusPage.URL,
+	}
+	if c.statusPage == nil {
+		sample.OK = boolPtr(false)
+		sample.Level = "unknown"
+		sample.Error = "status page probe is not configured"
+		return sample
+	}
+
+	timeout := time.Duration(c.cfg.HTTPTimeoutSeconds) * time.Second
+	statusPageCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	result, err := c.statusPage.Get(statusPageCtx, statusPage.URL, statusPage.ImportantComponents)
+	if err != nil {
+		sample.Error = err.Error()
+	}
+	ok := result.OK && err == nil
+	sample.OK = boolPtr(ok)
+	sample.Level = result.Level
+	if sample.Level == "" {
+		sample.Level = "unknown"
+	}
+	sample.Indicator = result.Indicator
+	sample.Description = result.Description
+	sample.DurationMs = &result.DurationMs
+	sample.Components = result.Components
+	sample.Incidents = result.Incidents
+	sample.ScheduledMaintenances = result.ScheduledMaintenances
+
+	return sample
+}
+
+func (c *Collector) logStatusPageChange(sample model.Sample) {
+	if c.lastStatusPageLevels == nil {
+		c.lastStatusPageLevels = make(map[string]string)
+	}
+	level := sample.Level
+	if level == "" {
+		level = "unknown"
+	}
+	previous := c.lastStatusPageLevels[sample.Name]
+	if previous == level {
+		return
+	}
+	c.lastStatusPageLevels[sample.Name] = level
+	if sample.Error != "" {
+		log.Printf("status page fetch failed: name=%s error=%q", sample.Name, sample.Error)
+		return
+	}
+	switch level {
+	case "ok":
+		log.Printf("status page ok: name=%s indicator=%s", sample.Name, sample.Indicator)
+	case "warning", "critical":
+		log.Printf("status page %s: name=%s indicator=%s description=%q", level, sample.Name, sample.Indicator, sample.Description)
+	default:
+		log.Printf("status page unknown: name=%s indicator=%s description=%q", sample.Name, sample.Indicator, sample.Description)
+	}
 }
 
 const (

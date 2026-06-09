@@ -17,6 +17,7 @@ func TestMonitoringCompactOK(t *testing.T) {
 	now := time.Now()
 	state.Load([]model.Sample{
 		{Timestamp: now, Type: "ping", Name: "gateway", OK: &ok, LossPercent: floatPtr(0), RTTAvgMs: floatPtr(1)},
+		{Timestamp: now, Type: "status_page", Name: "github_status", DisplayName: "GitHub Status", OK: &ok, Level: "ok", Indicator: "none", Description: "All Systems Operational"},
 	})
 	handler := New(state, "test").Routes()
 
@@ -42,6 +43,31 @@ func TestMonitoringCompactOK(t *testing.T) {
 	}
 	if body.History.Points[0].Level == "" {
 		t.Fatalf("history point = %+v, want level", body.History.Points[0])
+	}
+	if body.ProviderStatus.Level != "ok" || body.ProviderStatus.Alert || body.ProviderStatus.IssueCount != 0 || len(body.ProviderStatus.Providers) != 1 || body.ProviderStatus.Providers[0].Name != "github_status" {
+		t.Fatalf("provider_status = %+v, want compact provider status", body.ProviderStatus)
+	}
+}
+
+func TestMonitoringCompactProviderStatusWarning(t *testing.T) {
+	state := collector.NewState()
+	failed := false
+	now := time.Now()
+	state.Load([]model.Sample{
+		{Timestamp: now, Type: "status_page", Name: "openai_status", DisplayName: "OpenAI Status", OK: &failed, Level: "warning", Indicator: "minor", Description: "Partial System Outage"},
+	})
+	handler := New(state, "test").Routes()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/monitoring/compact", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	var body monitoringCompactResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if body.ProviderStatus.Level != "warning" || !body.ProviderStatus.Alert || body.ProviderStatus.IssueCount != 1 || len(body.ProviderStatus.Providers) != 1 {
+		t.Fatalf("provider_status = %+v, want warning alert", body.ProviderStatus)
 	}
 }
 

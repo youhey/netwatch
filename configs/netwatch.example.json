@@ -107,6 +107,64 @@
       }
     }
   ],
+  "status_pages": [
+    {
+      "name": "github_status",
+      "label": "GitHub Status",
+      "display_order": 10,
+      "type": "status_page",
+      "provider": "statuspage",
+      "group": "github",
+      "category": "dev",
+      "url": "https://www.githubstatus.com/api/v2/summary.json",
+      "interval_seconds": 300,
+      "important_components": [
+        "Git Operations",
+        "API Requests",
+        "Webhooks",
+        "Actions",
+        "Packages"
+      ]
+    },
+    {
+      "name": "openai_status",
+      "label": "OpenAI Status",
+      "display_order": 20,
+      "type": "status_page",
+      "provider": "statuspage",
+      "group": "openai",
+      "category": "ai",
+      "url": "https://status.openai.com/api/v2/summary.json",
+      "interval_seconds": 300,
+      "important_components": [
+        "Login",
+        "Responses",
+        "Chat Completions",
+        "Codex API",
+        "Codex Web",
+        "App",
+        "File uploads"
+      ]
+    },
+    {
+      "name": "cloudflare_status",
+      "label": "Cloudflare Status",
+      "display_order": 30,
+      "type": "status_page",
+      "provider": "statuspage",
+      "group": "cloudflare",
+      "category": "infra",
+      "url": "https://www.cloudflarestatus.com/api/v2/summary.json",
+      "interval_seconds": 300,
+      "important_components": [
+        "Cloudflare Sites and Services",
+        "Dashboard",
+        "API",
+        "Workers",
+        "CDN/Cache"
+      ]
+    }
+  ],
   "targets": [
     {
       "name": "gateway",

@@ -20,6 +20,7 @@ type Handler struct {
 	version        string
 	targets        []config.TargetConfig
 	downloadProbes []config.DownloadProbeConfig
+	statusPages    []config.StatusPageConfig
 	thresholds     config.MonitoringThresholds
 }
 
@@ -41,6 +42,11 @@ func (h *Handler) WithDownloadProbes(downloadProbes []config.DownloadProbeConfig
 	return h
 }
 
+func (h *Handler) WithStatusPages(statusPages []config.StatusPageConfig) *Handler {
+	h.statusPages = statusPages
+	return h
+}
+
 func (h *Handler) WithMonitoringThresholds(thresholds config.MonitoringThresholds) *Handler {
 	h.thresholds = thresholds
 	return h
@@ -58,6 +64,8 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /api/http/series", h.httpSeries)
 	mux.HandleFunc("GET /api/download/latest", h.downloadLatest)
 	mux.HandleFunc("GET /api/download/series", h.downloadSeries)
+	mux.HandleFunc("GET /api/status-pages/latest", h.statusPagesLatest)
+	mux.HandleFunc("GET /api/summary", h.summary)
 	mux.HandleFunc("GET /api/services/latest", h.servicesLatest)
 	mux.HandleFunc("GET /api/services/series", h.servicesSeries)
 	mux.HandleFunc("GET /api/services/summary", h.servicesSummary)
@@ -91,6 +99,8 @@ func (h *Handler) capabilities(w http.ResponseWriter, r *http.Request) {
 			"http":                            true,
 			"download":                        true,
 			"download_series":                 true,
+			"summary":                         true,
+			"status_pages":                    true,
 			"services":                        true,
 			"charts":                          true,
 			"charts_download":                 true,
@@ -110,10 +120,11 @@ func (h *Handler) capabilities(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) latest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ping":     h.latestByType("ping"),
-		"dns":      h.latestByType("dns"),
-		"http":     h.latestByType("http"),
-		"download": h.latestByType("download"),
+		"ping":         h.latestByType("ping"),
+		"dns":          h.latestByType("dns"),
+		"http":         h.latestByType("http"),
+		"download":     h.latestByType("download"),
+		"status_pages": h.latestByType("status_page"),
 	})
 }
 
@@ -155,6 +166,17 @@ func (h *Handler) downloadLatest(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) downloadSeries(w http.ResponseWriter, r *http.Request) {
 	h.series(w, r, "download")
+}
+
+func (h *Handler) statusPagesLatest(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, statusPagesLatestResponse(h.latestStatusPages(), time.Now()))
+}
+
+func (h *Handler) summary(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"generated_at":    time.Now(),
+		"provider_status": providerStatusSummary(h.latestStatusPages()),
+	})
 }
 
 func (h *Handler) servicesLatest(w http.ResponseWriter, r *http.Request) {
@@ -337,7 +359,7 @@ func (h *Handler) monitoringCompact(w http.ResponseWriter, r *http.Request) {
 	start := end.Add(-duration)
 	status := buildMonitoringStatus(h.applyDisplayMetadata(h.state.LatestAll()), h.thresholds, generatedAt)
 	history := buildMonitoringStatusHistory(h.applyDisplayMetadata(h.state.SamplesSince(start)), h.thresholds, "2h", "5m", duration, bucket, start, end, generatedAt)
-	writeJSON(w, http.StatusOK, buildMonitoringCompact(status, history, generatedAt))
+	writeJSON(w, http.StatusOK, buildMonitoringCompact(status, history, generatedAt, h.latestStatusPages()))
 }
 
 func (h *Handler) latestByType(sampleType string) []model.Sample {
@@ -350,6 +372,10 @@ func (h *Handler) seriesByType(sampleType, name string, since time.Time) []model
 
 func (h *Handler) latestServices() []model.Sample {
 	return h.applyDisplayMetadata(h.state.LatestServices())
+}
+
+func (h *Handler) latestStatusPages() []model.Sample {
+	return h.applyDisplayMetadata(h.state.LatestByType("status_page"))
 }
 
 func (h *Handler) serviceSeries(group, name string, since time.Time) []model.Sample {
@@ -381,6 +407,11 @@ func (h *Handler) displayOrderFor(name string) int {
 			return probe.DisplayOrder
 		}
 	}
+	for _, statusPage := range h.statusPages {
+		if statusPage.Name == name {
+			return statusPage.DisplayOrder
+		}
+	}
 	return 0
 }
 
@@ -399,6 +430,14 @@ func (h *Handler) displayNameFor(sample model.Sample) string {
 				return probe.Label
 			}
 			return labelForName(probe.Name)
+		}
+	}
+	for _, statusPage := range h.statusPages {
+		if statusPage.Name == sample.Name {
+			if strings.TrimSpace(statusPage.Label) != "" {
+				return statusPage.Label
+			}
+			return labelForName(statusPage.Name)
 		}
 	}
 	if strings.TrimSpace(sample.DisplayName) != "" {

@@ -141,6 +141,57 @@ func TestLoadHTTPExpectedStatuses(t *testing.T) {
 	}
 }
 
+func TestLoadStatusPages(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "netwatch.json")
+	content := `{
+  "listen_addr": "127.0.0.1:8080",
+  "data_dir": "/var/lib/netwatch",
+  "data_file_pattern": "samples-%Y-%m-%d.jsonl",
+  "retention_days": 7,
+  "status_pages": [
+    {
+      "name": "github_status",
+      "label": "GitHub Status",
+      "display_order": 10,
+      "type": "status_page",
+      "provider": "statuspage",
+      "group": "github",
+      "category": "dev",
+      "url": "https://www.githubstatus.com/api/v2/summary.json",
+      "important_components": ["Git Operations", "API Requests"]
+    }
+  ],
+  "targets": [
+    {
+      "name": "home",
+      "type": "http",
+      "url": "https://example.com/"
+    }
+  ]
+}`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(cfg.StatusPages) != 1 {
+		t.Fatalf("len(StatusPages) = %d, want 1", len(cfg.StatusPages))
+	}
+	statusPage := cfg.StatusPages[0]
+	if statusPage.Name != "github_status" || statusPage.Provider != "statuspage" || statusPage.Group != "github" || statusPage.Category != "dev" || statusPage.DisplayOrder != 10 {
+		t.Fatalf("statusPage = %+v, want status page settings loaded", statusPage)
+	}
+	if !reflect.DeepEqual(statusPage.ImportantComponents, []string{"Git Operations", "API Requests"}) {
+		t.Fatalf("ImportantComponents = %+v, want configured values", statusPage.ImportantComponents)
+	}
+	if got := cfg.StatusPageIntervalSeconds(statusPage); got != 300 {
+		t.Fatalf("StatusPageIntervalSeconds() = %d, want default 300", got)
+	}
+}
+
 func TestLoadDownloadProbes(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "netwatch.json")
 	content := `{
@@ -411,6 +462,26 @@ func TestValidateHTTPExpectedStatuses(t *testing.T) {
 	}
 }
 
+func TestValidateStatusPage(t *testing.T) {
+	cfg := Default()
+	cfg.Targets = []TargetConfig{
+		{Name: "home", Type: "http", URL: "https://example.com/"},
+	}
+	cfg.StatusPages = []StatusPageConfig{
+		{Name: "github_status", Type: "status_page", Provider: "other", Group: "github", Category: "dev", URL: "https://www.githubstatus.com/api/v2/summary.json"},
+	}
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() error = nil, want invalid provider error")
+	}
+
+	cfg.StatusPages[0].Provider = "statuspage"
+	cfg.StatusPages[0].URL = "ftp://example.com/status.json"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() error = nil, want invalid URL error")
+	}
+}
+
 func TestLoadExampleConfig(t *testing.T) {
 	cfg, err := Load(filepath.Join("..", "..", "configs", "netwatch.example.json"))
 	if err != nil {
@@ -422,6 +493,9 @@ func TestLoadExampleConfig(t *testing.T) {
 	}
 	if len(cfg.EnabledDownloadProbes()) != 2 {
 		t.Fatalf("len(EnabledDownloadProbes) = %d, want Phase 5 download probes", len(cfg.EnabledDownloadProbes()))
+	}
+	if len(cfg.StatusPages) != 3 {
+		t.Fatalf("len(StatusPages) = %d, want Phase 7 status pages", len(cfg.StatusPages))
 	}
 	expectedTargets := map[string][]int{
 		"github_home":          {200, 301, 302},
@@ -484,5 +558,8 @@ func TestLoadExampleConfig(t *testing.T) {
 	}
 	if !secondRetry.Enabled || len(secondRetry.IntervalsSeconds) != 7 || secondRetry.IntervalsSeconds[0] != 30 || secondRetry.IntervalsSeconds[6] != 3600 || secondRetry.RecoverySuccessCount != 2 {
 		t.Fatalf("r2_10mb retry = %+v, want example adaptive retry", secondRetry)
+	}
+	if cfg.StatusPages[0].Name != "github_status" || cfg.StatusPages[0].Provider != "statuspage" || cfg.StatusPages[0].DisplayOrder != 10 || len(cfg.StatusPages[0].ImportantComponents) == 0 {
+		t.Fatalf("status pages = %+v, want github status page first", cfg.StatusPages)
 	}
 }

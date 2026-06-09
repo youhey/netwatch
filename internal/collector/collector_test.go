@@ -19,6 +19,11 @@ type fakeDownloadProbe struct {
 	deadline time.Time
 }
 
+type fakeStatusPageProbe struct {
+	deadline            time.Time
+	importantComponents []string
+}
+
 type fakeStorage struct {
 	samples []model.Sample
 }
@@ -48,6 +53,21 @@ func (p *fakeDownloadProbe) Get(ctx context.Context, url string, expectedBytes i
 		DurationMs:      1000,
 		BytesPerSec:     float64(expectedBytes),
 		Mbps:            float64(expectedBytes) * 8 / 1_000_000,
+	}, nil
+}
+
+func (p *fakeStatusPageProbe) Get(ctx context.Context, url string, importantComponents []string) (probe.StatusPageResult, error) {
+	deadline, ok := ctx.Deadline()
+	if ok {
+		p.deadline = deadline
+	}
+	p.importantComponents = append([]string(nil), importantComponents...)
+	return probe.StatusPageResult{
+		OK:          true,
+		Level:       "ok",
+		Indicator:   "none",
+		Description: "All Systems Operational",
+		DurationMs:  123,
 	}, nil
 }
 
@@ -120,6 +140,41 @@ func TestMeasureDownloadUsesProbeTimeoutAndRecordsMetrics(t *testing.T) {
 	}
 	if downloadProbe.deadline.Before(before.Add(2*time.Second)) || remaining > 3*time.Second {
 		t.Fatalf("deadline remaining = %v, want probe timeout around 3s", remaining)
+	}
+}
+
+func TestMeasureStatusPageUsesMetadataAndTimeout(t *testing.T) {
+	statusPageProbe := &fakeStatusPageProbe{}
+	cfg := config.Default()
+	cfg.HTTPTimeoutSeconds = 3
+	target := config.StatusPageConfig{
+		Name:                "github_status",
+		Label:               "GitHub Status",
+		DisplayOrder:        10,
+		Type:                "status_page",
+		Provider:            "statuspage",
+		Group:               "github",
+		Category:            "dev",
+		URL:                 "https://www.githubstatus.com/api/v2/summary.json",
+		ImportantComponents: []string{"API Requests"},
+	}
+	collector := New(cfg, nil, nil, nil, nil, nil, NewState(), statusPageProbe)
+
+	before := time.Now()
+	sample := collector.measureStatusPage(context.Background(), target)
+	remaining := time.Until(statusPageProbe.deadline)
+
+	if sample.Type != "status_page" || sample.Name != "github_status" || sample.DisplayName != "GitHub Status" || sample.DisplayOrder != 10 || sample.Provider != "statuspage" || sample.Group != "github" || sample.Category != "dev" {
+		t.Fatalf("sample = %+v, want status page metadata", sample)
+	}
+	if sample.Level != "ok" || sample.Indicator != "none" || sample.Description != "All Systems Operational" || sample.DurationMs == nil || *sample.DurationMs != 123 || sample.OK == nil || !*sample.OK {
+		t.Fatalf("sample = %+v, want status page result", sample)
+	}
+	if len(statusPageProbe.importantComponents) != 1 || statusPageProbe.importantComponents[0] != "API Requests" {
+		t.Fatalf("importantComponents = %+v, want configured components", statusPageProbe.importantComponents)
+	}
+	if statusPageProbe.deadline.Before(before.Add(2*time.Second)) || remaining > 3*time.Second {
+		t.Fatalf("deadline remaining = %v, want HTTP timeout around 3s", remaining)
 	}
 }
 

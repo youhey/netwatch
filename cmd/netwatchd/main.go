@@ -46,12 +46,13 @@ func main() {
 
 	httpProbe := probe.NewHTTP(cfg.HTTPDisableKeepAlive, cfg.HTTPMaxBodyBytes)
 	downloadProbe := probe.NewDownload()
-	c := collector.New(cfg, probe.Fping{}, probe.DNS{}, httpProbe, downloadProbe, jsonl, state)
+	statusPageProbe := probe.NewStatusPage()
+	c := collector.New(cfg, probe.Fping{}, probe.DNS{}, httpProbe, downloadProbe, jsonl, state, statusPageProbe)
 	go c.Run(rootCtx)
 
 	server := &http.Server{
 		Addr:              cfg.ListenAddr,
-		Handler:           api.New(state, version, cfg.Targets).WithDownloadProbes(cfg.EnabledDownloadProbes()).WithMonitoringThresholds(cfg.MonitoringThresholds).Routes(),
+		Handler:           api.New(state, version, cfg.Targets).WithDownloadProbes(cfg.EnabledDownloadProbes()).WithStatusPages(cfg.StatusPages).WithMonitoringThresholds(cfg.MonitoringThresholds).Routes(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
