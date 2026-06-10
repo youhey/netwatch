@@ -128,12 +128,20 @@ func TestSummaryIncludesProviderStatus(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	var body struct {
+		NetworkStatus  monitoringSummaryResponse     `json:"network_status"`
+		ServiceHealth  serviceHealthSummaryResponse  `json:"service_health"`
 		ProviderStatus providerStatusSummaryResponse `json:"provider_status"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("Unmarshal() error = %v", err)
 	}
-	if body.ProviderStatus.Level != "ok" || !body.ProviderStatus.OK || body.ProviderStatus.Providers != 1 {
+	if body.NetworkStatus.Level != "ok" || body.NetworkStatus.Alert || body.NetworkStatus.IssueCount != 0 {
+		t.Fatalf("network_status = %+v, want ok network summary", body.NetworkStatus)
+	}
+	if body.ServiceHealth.Level != "warning" || body.ServiceHealth.Alert || body.ServiceHealth.IssueCount != 1 || body.ServiceHealth.Groups != 2 || body.ServiceHealth.Services != 2 {
+		t.Fatalf("service_health = %+v, want service summary", body.ServiceHealth)
+	}
+	if body.ProviderStatus.Level != "ok" || !body.ProviderStatus.OK || body.ProviderStatus.Alert || body.ProviderStatus.IssueCount != 0 || body.ProviderStatus.Providers != 1 {
 		t.Fatalf("provider_status = %+v, want ok summary", body.ProviderStatus)
 	}
 }

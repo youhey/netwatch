@@ -173,8 +173,12 @@ func (h *Handler) statusPagesLatest(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) summary(w http.ResponseWriter, r *http.Request) {
+	generatedAt := time.Now()
+	status := buildMonitoringStatus(h.applyDisplayMetadata(h.state.LatestAll()), h.thresholds, generatedAt)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"generated_at":    time.Now(),
+		"generated_at":    generatedAt,
+		"network_status":  monitoringSummary(status),
+		"service_health":  serviceHealthSummary(h.latestServices(), h.thresholds),
 		"provider_status": providerStatusSummary(h.latestStatusPages()),
 	})
 }
@@ -359,7 +363,7 @@ func (h *Handler) monitoringCompact(w http.ResponseWriter, r *http.Request) {
 	start := end.Add(-duration)
 	status := buildMonitoringStatus(h.applyDisplayMetadata(h.state.LatestAll()), h.thresholds, generatedAt)
 	history := buildMonitoringStatusHistory(h.applyDisplayMetadata(h.state.SamplesSince(start)), h.thresholds, "2h", "5m", duration, bucket, start, end, generatedAt)
-	writeJSON(w, http.StatusOK, buildMonitoringCompact(status, history, generatedAt, h.latestStatusPages()))
+	writeJSON(w, http.StatusOK, buildMonitoringCompact(status, history, generatedAt, h.thresholds, h.latestServices(), h.latestStatusPages()))
 }
 
 func (h *Handler) latestByType(sampleType string) []model.Sample {
@@ -473,6 +477,20 @@ type monitoringStatusResponse struct {
 	Message       string             `json:"message"`
 	PrimaryReason *monitoringReason  `json:"primary_reason"`
 	Reasons       []monitoringReason `json:"reasons"`
+}
+
+type monitoringSummaryResponse struct {
+	Level      string `json:"level"`
+	Alert      bool   `json:"alert"`
+	IssueCount int    `json:"issue_count"`
+}
+
+func monitoringSummary(status monitoringStatusResponse) monitoringSummaryResponse {
+	return monitoringSummaryResponse{
+		Level:      status.Level,
+		Alert:      status.Alert,
+		IssueCount: len(status.Reasons),
+	}
 }
 
 type serviceGroupResponse struct {

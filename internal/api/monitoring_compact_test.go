@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/youhey/netwatch/internal/collector"
+	"github.com/youhey/netwatch/internal/config"
 	"github.com/youhey/netwatch/internal/model"
 )
 
@@ -38,6 +39,12 @@ func TestMonitoringCompactOK(t *testing.T) {
 	if body.IssueCount != 0 || body.PrimaryReason != nil {
 		t.Fatalf("body = %+v, want no issue reason", body)
 	}
+	if body.NetworkStatus.Level != body.Level || body.NetworkStatus.Alert != body.Alert || body.NetworkStatus.IssueCount != body.IssueCount || len(body.Reasons) != len(body.NetworkStatus.Reasons) {
+		t.Fatalf("body = %+v, want top-level fields to match network_status", body)
+	}
+	if body.ServiceHealth.Level != "ok" || body.ServiceHealth.Alert || body.ServiceHealth.IssueCount != 0 || len(body.ServiceHealth.Summary) != 0 || len(body.ServiceHealth.Issues) != 0 {
+		t.Fatalf("service_health = %+v, want empty ok service health", body.ServiceHealth)
+	}
 	if body.History.Range != "2h" || body.History.Bucket != "5m" || body.History.BucketSeconds != 300 || len(body.History.Points) != 24 {
 		t.Fatalf("history = %+v, want compact 2h/5m history", body.History)
 	}
@@ -46,6 +53,9 @@ func TestMonitoringCompactOK(t *testing.T) {
 	}
 	if body.ProviderStatus.Level != "ok" || body.ProviderStatus.Alert || body.ProviderStatus.IssueCount != 0 || len(body.ProviderStatus.Providers) != 1 || body.ProviderStatus.Providers[0].Name != "github_status" {
 		t.Fatalf("provider_status = %+v, want compact provider status", body.ProviderStatus)
+	}
+	if body.ProviderStatus.Providers[0].Error != nil {
+		t.Fatalf("provider error = %v, want nil error", body.ProviderStatus.Providers[0].Error)
 	}
 }
 
@@ -69,8 +79,40 @@ func TestMonitoringCompactProviderStatusWarning(t *testing.T) {
 	if body.ProviderStatus.Level != "warning" || !body.ProviderStatus.Alert || body.ProviderStatus.IssueCount != 1 || len(body.ProviderStatus.Providers) != 1 {
 		t.Fatalf("provider_status = %+v, want warning alert", body.ProviderStatus)
 	}
+	provider := body.ProviderStatus.Providers[0]
+	if provider.Group != "" || provider.Category != "" || provider.Indicator != "minor" || provider.MeasuredAt.IsZero() || provider.Error != nil {
+		t.Fatalf("provider = %+v, want compact provider details", provider)
+	}
 	if body.Level != "ok" || body.Alert || body.IssueCount != 0 || body.PrimaryReason != nil {
 		t.Fatalf("body = %+v, want provider status excluded from core monitoring", body)
+	}
+}
+
+func TestMonitoringCompactProviderStatusUnknown(t *testing.T) {
+	state := collector.NewState()
+	failed := false
+	now := time.Now()
+	state.Load([]model.Sample{
+		{Timestamp: now, Type: "status_page", Name: "openai_status", DisplayName: "OpenAI Status", OK: &failed, Level: "unknown", Error: "request timeout"},
+	})
+	handler := New(state, "test").Routes()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/monitoring/compact", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	var body monitoringCompactResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if body.ProviderStatus.Level != "unknown" || body.ProviderStatus.Alert || body.ProviderStatus.IssueCount != 0 {
+		t.Fatalf("provider_status = %+v, want unknown without alert/issue count", body.ProviderStatus)
+	}
+	if len(body.ProviderStatus.Providers) != 1 || body.ProviderStatus.Providers[0].Error == nil || *body.ProviderStatus.Providers[0].Error != "request timeout" {
+		t.Fatalf("providers = %+v, want provider error detail", body.ProviderStatus.Providers)
+	}
+	if body.Level != "ok" || body.Alert {
+		t.Fatalf("body = %+v, want provider unknown excluded from core monitoring", body)
 	}
 }
 
@@ -81,8 +123,8 @@ func TestMonitoringCompactIgnoresHTTPServiceIssue(t *testing.T) {
 	now := time.Now()
 	state.Load([]model.Sample{
 		{Timestamp: now, Type: "ping", Name: "gateway", OK: &ok, LossPercent: floatPtr(0), RTTAvgMs: floatPtr(1)},
-		{Timestamp: now, Type: "http", Group: "github", Category: "dev", Name: "github_home", OK: &failed, TotalMs: floatPtr(1), Error: "unexpected status 503"},
-		{Timestamp: now, Type: "http", Group: "chatgpt", Category: "ai", Name: "chatgpt_home", OK: &ok, TotalMs: floatPtr(6000)},
+		{Timestamp: now, Type: "http", Group: "github", Category: "dev", Name: "github_home", DisplayOrder: 10, OK: &failed, TotalMs: floatPtr(1), Error: "unexpected status 503"},
+		{Timestamp: now, Type: "http", Group: "chatgpt", Category: "ai", Name: "chatgpt_home", DisplayOrder: 20, OK: &ok, TotalMs: floatPtr(6000)},
 	})
 	handler := New(state, "test").Routes()
 
@@ -96,6 +138,50 @@ func TestMonitoringCompactIgnoresHTTPServiceIssue(t *testing.T) {
 	}
 	if body.Level != "ok" || body.Alert || body.IssueCount != 0 || body.PrimaryReason != nil {
 		t.Fatalf("body = %+v, want HTTP service issues excluded from core monitoring", body)
+	}
+	if body.ServiceHealth.Level != "critical" || body.ServiceHealth.Alert || body.ServiceHealth.IssueCount != 2 || len(body.ServiceHealth.Issues) != 2 {
+		t.Fatalf("service_health = %+v, want HTTP issues separated", body.ServiceHealth)
+	}
+	if body.ServiceHealth.Summary[0].Group != "github" || body.ServiceHealth.Summary[0].Label != "Dev Core" || body.ServiceHealth.Summary[0].Level != "warning" {
+		t.Fatalf("service summary = %+v, want github warning summary", body.ServiceHealth.Summary)
+	}
+	if body.ServiceHealth.Issues[0].Name != "github_home" || body.ServiceHealth.Issues[0].Reason != "unexpected_status" {
+		t.Fatalf("issues = %+v, want github issue", body.ServiceHealth.Issues)
+	}
+}
+
+func TestMonitoringCompactServiceHealthCriticalAndExpectedStatusOK(t *testing.T) {
+	state := collector.NewState()
+	ok := true
+	failed := false
+	unauthorized := http.StatusUnauthorized
+	now := time.Now()
+	state.Load([]model.Sample{
+		{Timestamp: now, Type: "http", Group: "openai", Category: "ai", Name: "openai_api", DisplayName: "OpenAI API", OK: &ok, HTTPStatus: &unauthorized, TotalMs: floatPtr(120)},
+		{Timestamp: now, Type: "http", Group: "openai", Category: "ai", Name: "chatgpt_home", DisplayName: "ChatGPT Home", OK: &failed, HTTPStatus: intPtr(http.StatusServiceUnavailable), TotalMs: floatPtr(1220)},
+		{Timestamp: now, Type: "http", Group: "openai", Category: "ai", Name: "openai_status", DisplayName: "OpenAI Status", OK: &failed, HTTPStatus: intPtr(http.StatusBadGateway), TotalMs: floatPtr(900)},
+	})
+	handler := New(state, "test").Routes()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/monitoring/compact", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	var body monitoringCompactResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if body.Level != "ok" || body.Alert {
+		t.Fatalf("body = %+v, want HTTP critical excluded from core monitoring", body)
+	}
+	if body.ServiceHealth.Level != "critical" || body.ServiceHealth.Alert || body.ServiceHealth.IssueCount != 2 || len(body.ServiceHealth.Issues) != 2 {
+		t.Fatalf("service_health = %+v, want critical service health without alert", body.ServiceHealth)
+	}
+	if body.ServiceHealth.Summary[0].Group != "openai" || body.ServiceHealth.Summary[0].Label != "AI" || body.ServiceHealth.Summary[0].OK != 1 || body.ServiceHealth.Summary[0].Total != 3 {
+		t.Fatalf("summary = %+v, want openai service summary", body.ServiceHealth.Summary)
+	}
+	if body.ServiceHealth.Issues[0].Reason != "unexpected_status" || body.ServiceHealth.Issues[0].HTTPStatusCode == nil || *body.ServiceHealth.Issues[0].HTTPStatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("issues = %+v, want unexpected status issue", body.ServiceHealth.Issues)
 	}
 }
 
@@ -178,7 +264,7 @@ func TestMonitoringCompactCriticalAndUnknownLabels(t *testing.T) {
 			Metric: "loss_percent",
 			Value:  6,
 		},
-	}, emptyCompactHistory(), time.Now())
+	}, emptyCompactHistory(), time.Now(), config.DefaultMonitoringThresholds(), nil, nil)
 	if critical.Label != "CRIT" || critical.Title != "Critical network issue detected" || critical.IssueCount != 1 {
 		t.Fatalf("critical = %+v, want compact critical response", critical)
 	}
@@ -187,7 +273,7 @@ func TestMonitoringCompactCriticalAndUnknownLabels(t *testing.T) {
 		Source: "netwatch",
 		Level:  "unknown",
 		Alert:  true,
-	}, emptyCompactHistory(), time.Now())
+	}, emptyCompactHistory(), time.Now(), config.DefaultMonitoringThresholds(), nil, nil)
 	if unknown.Label != "UNK" || unknown.PrimaryReason != nil || unknown.Message != "Netwatch cannot determine current network health." {
 		t.Fatalf("unknown = %+v, want compact unknown response", unknown)
 	}

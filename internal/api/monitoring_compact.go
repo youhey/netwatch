@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/youhey/netwatch/internal/config"
 	"github.com/youhey/netwatch/internal/model"
 )
 
@@ -29,8 +30,21 @@ type monitoringCompactResponse struct {
 	Message        string                        `json:"message"`
 	IssueCount     int                           `json:"issue_count"`
 	PrimaryReason  *monitoringCompactReason      `json:"primary_reason"`
+	Reasons        []monitoringCompactReason     `json:"reasons"`
 	History        monitoringCompactHistory      `json:"history"`
+	NetworkStatus  compactNetworkStatusResponse  `json:"network_status"`
+	ServiceHealth  compactServiceHealthResponse  `json:"service_health"`
 	ProviderStatus compactProviderStatusResponse `json:"provider_status"`
+}
+
+type compactNetworkStatusResponse struct {
+	Level      string                    `json:"level"`
+	Label      string                    `json:"label"`
+	Alert      bool                      `json:"alert"`
+	Title      string                    `json:"title"`
+	Message    string                    `json:"message"`
+	IssueCount int                       `json:"issue_count"`
+	Reasons    []monitoringCompactReason `json:"reasons"`
 }
 
 type monitoringCompactReason struct {
@@ -61,23 +75,35 @@ func monitoringCompactSupport() monitoringCompactSupportResponse {
 	}
 }
 
-func buildMonitoringCompact(status monitoringStatusResponse, history monitoringStatusHistoryResponse, generatedAt time.Time, providerSamples ...[]model.Sample) monitoringCompactResponse {
-	var statusPageSamples []model.Sample
-	if len(providerSamples) > 0 {
-		statusPageSamples = providerSamples[0]
-	}
+func buildMonitoringCompact(status monitoringStatusResponse, history monitoringStatusHistoryResponse, generatedAt time.Time, thresholds config.MonitoringThresholds, serviceSamples, statusPageSamples []model.Sample) monitoringCompactResponse {
+	networkStatus := compactNetworkStatus(status)
 	return monitoringCompactResponse{
 		Source:         "netwatch",
 		GeneratedAt:    generatedAt,
-		Level:          status.Level,
-		Label:          compactLabel(status.Level),
-		Alert:          status.Alert,
-		Title:          compactTitle(status.Level),
-		Message:        compactMessage(status.Level, status.PrimaryReason),
-		IssueCount:     len(status.Reasons),
+		Level:          networkStatus.Level,
+		Label:          networkStatus.Label,
+		Alert:          networkStatus.Alert,
+		Title:          networkStatus.Title,
+		Message:        networkStatus.Message,
+		IssueCount:     networkStatus.IssueCount,
 		PrimaryReason:  compactReason(status.PrimaryReason),
+		Reasons:        networkStatus.Reasons,
 		History:        compactHistory(history),
+		NetworkStatus:  networkStatus,
+		ServiceHealth:  compactServiceHealth(serviceSamples, thresholds),
 		ProviderStatus: compactProviderStatus(statusPageSamples),
+	}
+}
+
+func compactNetworkStatus(status monitoringStatusResponse) compactNetworkStatusResponse {
+	return compactNetworkStatusResponse{
+		Level:      status.Level,
+		Label:      compactLabel(status.Level),
+		Alert:      status.Alert,
+		Title:      compactTitle(status.Level),
+		Message:    compactMessage(status.Level, status.PrimaryReason),
+		IssueCount: len(status.Reasons),
+		Reasons:    compactReasons(status.Reasons),
 	}
 }
 
@@ -108,6 +134,21 @@ func compactReason(reason *monitoringReason) *monitoringCompactReason {
 		Metric: reason.Metric,
 		Value:  reason.Value,
 	}
+}
+
+func compactReasons(reasons []monitoringReason) []monitoringCompactReason {
+	compact := make([]monitoringCompactReason, 0, len(reasons))
+	for i := range reasons {
+		reason := reasons[i]
+		compact = append(compact, monitoringCompactReason{
+			Code:   reason.Code,
+			Level:  reason.Level,
+			Target: reason.Target,
+			Metric: reason.Metric,
+			Value:  reason.Value,
+		})
+	}
+	return compact
 }
 
 func compactLabel(level string) string {

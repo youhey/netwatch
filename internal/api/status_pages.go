@@ -29,12 +29,14 @@ type statusPageProviderResponse struct {
 }
 
 type providerStatusSummaryResponse struct {
-	Level     string `json:"level"`
-	OK        bool   `json:"ok"`
-	Providers int    `json:"providers"`
-	Warning   int    `json:"warning"`
-	Critical  int    `json:"critical"`
-	Unknown   int    `json:"unknown"`
+	Level      string `json:"level"`
+	OK         bool   `json:"ok"`
+	Alert      bool   `json:"alert"`
+	IssueCount int    `json:"issue_count"`
+	Providers  int    `json:"providers"`
+	Warning    int    `json:"warning"`
+	Critical   int    `json:"critical"`
+	Unknown    int    `json:"unknown"`
 }
 
 type compactProviderStatusResponse struct {
@@ -45,10 +47,15 @@ type compactProviderStatusResponse struct {
 }
 
 type compactProviderStatusProvider struct {
-	Name        string `json:"name"`
-	Label       string `json:"label"`
-	Level       string `json:"level"`
-	Description string `json:"description,omitempty"`
+	Name        string    `json:"name"`
+	Label       string    `json:"label"`
+	Group       string    `json:"group,omitempty"`
+	Category    string    `json:"category,omitempty"`
+	Level       string    `json:"level"`
+	Description string    `json:"description,omitempty"`
+	Indicator   string    `json:"indicator,omitempty"`
+	MeasuredAt  time.Time `json:"measured_at"`
+	Error       *string   `json:"error"`
 }
 
 func statusPagesLatestResponse(samples []model.Sample, generatedAt time.Time) statusPagesLatestBody {
@@ -112,6 +119,8 @@ func providerStatusSummary(samples []model.Sample) providerStatusSummaryResponse
 	}
 	summary.Level = aggregateProviderStatusLevel(summary.Warning, summary.Critical, summary.Unknown)
 	summary.OK = summary.Level == "ok"
+	summary.Alert = summary.Level == "warning" || summary.Level == "critical"
+	summary.IssueCount = summary.Warning + summary.Critical
 	return summary
 }
 
@@ -119,17 +128,26 @@ func compactProviderStatus(samples []model.Sample) compactProviderStatusResponse
 	summary := providerStatusSummary(samples)
 	providers := make([]compactProviderStatusProvider, 0, len(samples))
 	for _, sample := range samples {
+		var errorValue *string
+		if sample.Error != "" {
+			errorValue = &sample.Error
+		}
 		providers = append(providers, compactProviderStatusProvider{
 			Name:        sample.Name,
 			Label:       sample.DisplayName,
+			Group:       sample.Group,
+			Category:    sample.Category,
 			Level:       statusPageLevel(sample),
 			Description: sample.Description,
+			Indicator:   sample.Indicator,
+			MeasuredAt:  sample.Timestamp,
+			Error:       errorValue,
 		})
 	}
 	return compactProviderStatusResponse{
 		Level:      summary.Level,
-		Alert:      summary.Level == "warning" || summary.Level == "critical",
-		IssueCount: summary.Warning + summary.Critical,
+		Alert:      summary.Alert,
+		IssueCount: summary.IssueCount,
 		Providers:  providers,
 	}
 }
