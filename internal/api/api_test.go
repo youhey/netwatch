@@ -1,9 +1,15 @@
 package api
 
 import (
+	"archive/zip"
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -143,6 +149,100 @@ func TestSummaryIncludesProviderStatus(t *testing.T) {
 	}
 	if body.ProviderStatus.Level != "ok" || !body.ProviderStatus.OK || body.ProviderStatus.Alert || body.ProviderStatus.IssueCount != 0 || body.ProviderStatus.Providers != 1 {
 		t.Fatalf("provider_status = %+v, want ok summary", body.ProviderStatus)
+	}
+}
+
+func TestAIExportReturnsZip(t *testing.T) {
+	dataDir := t.TempDir()
+	now := time.Now()
+	old := now.Add(-48 * time.Hour)
+	ok := true
+	failed := false
+	status := http.StatusServiceUnavailable
+	writeTestJSONL(t, dataDir, old, []model.Sample{
+		{Timestamp: old, Type: "download", Name: "r2_1mb", OK: &ok, Mbps: floatPtr(9)},
+	})
+	writeTestJSONL(t, dataDir, now, []model.Sample{
+		{Timestamp: now.Add(-1 * time.Hour), Type: "ping", Name: "gateway", OK: &ok, LossPercent: floatPtr(0), RTTAvgMs: floatPtr(1)},
+		{Timestamp: now.Add(-30 * time.Minute), Type: "http", Group: "github", Category: "dev", Name: "github_home", OK: &failed, HTTPStatus: &status, TotalMs: floatPtr(1200)},
+	})
+	targets := []config.TargetConfig{
+		{Name: "gateway", Label: "Gateway", Type: "ping", Target: "192.168.1.1"},
+		{Name: "github_home", Label: "GitHub Home", Type: "http", Group: "github", Category: "dev", URL: "https://github.com/"},
+	}
+	handler := New(collector.NewState(), "test-version", targets).WithExportStorage("", dataDir, "samples-%Y-%m-%d.jsonl").Routes()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/export/ai?range=1d", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s, want 200", rec.Code, rec.Body.String())
+	}
+	if contentType := rec.Header().Get("Content-Type"); contentType != "application/zip" {
+		t.Fatalf("Content-Type = %q, want application/zip", contentType)
+	}
+	if disposition := rec.Header().Get("Content-Disposition"); !strings.Contains(disposition, "netwatch-export-") || !strings.Contains(disposition, ".zip") {
+		t.Fatalf("Content-Disposition = %q, want export zip filename", disposition)
+	}
+
+	files := readZipFiles(t, rec.Body.Bytes())
+	for _, name := range []string{"manifest.json", "README.md", "analysis-prompt.md", "targets.json", "thresholds.json", "summary.json", "samples.jsonl"} {
+		if _, ok := files[name]; !ok {
+			t.Fatalf("zip files = %v, want %s", sortedMapKeys(files), name)
+		}
+	}
+	var manifest aiExportManifest
+	if err := json.Unmarshal(files["manifest.json"], &manifest); err != nil {
+		t.Fatalf("Unmarshal(manifest) error = %v", err)
+	}
+	if manifest.Format != aiExportFormat || manifest.SampleCount != 2 || manifest.NetwatchVersion != "test-version" {
+		t.Fatalf("manifest = %+v, want export metadata", manifest)
+	}
+	if strings.Contains(string(files["samples.jsonl"]), "r2_1mb") || !strings.Contains(string(files["samples.jsonl"]), `"kind":"ping"`) || !strings.Contains(string(files["samples.jsonl"]), `"kind":"http"`) {
+		t.Fatalf("samples.jsonl = %s, want only in-range ping/http samples with kind", string(files["samples.jsonl"]))
+	}
+	var summary aiExportSummary
+	if err := json.Unmarshal(files["summary.json"], &summary); err != nil {
+		t.Fatalf("Unmarshal(summary) error = %v", err)
+	}
+	if summary.Counts.Samples != 2 || summary.Counts.Ping != 1 || summary.Counts.HTTP != 1 || summary.Issues.ServiceHealth != 1 {
+		t.Fatalf("summary = %+v, want filtered sample counts and service issue", summary)
+	}
+}
+
+func TestAIExportRejectsInvalidRange(t *testing.T) {
+	handler := New(collector.NewState(), "test").WithExportStorage("", t.TempDir(), "samples-%Y-%m-%d.jsonl").Routes()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/export/ai?range=2d", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "invalid_range") {
+		t.Fatalf("body = %s, want invalid_range error", rec.Body.String())
+	}
+}
+
+func TestAIExportReturnsEmptyZipWhenNoData(t *testing.T) {
+	handler := New(collector.NewState(), "test").WithExportStorage("", t.TempDir(), "samples-%Y-%m-%d.jsonl").Routes()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/export/ai?from=2026-06-01&to=2026-06-02", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s, want 200", rec.Code, rec.Body.String())
+	}
+	files := readZipFiles(t, rec.Body.Bytes())
+	var manifest aiExportManifest
+	if err := json.Unmarshal(files["manifest.json"], &manifest); err != nil {
+		t.Fatalf("Unmarshal(manifest) error = %v", err)
+	}
+	if manifest.SampleCount != 0 || len(files["samples.jsonl"]) != 0 {
+		t.Fatalf("manifest=%+v samples=%q, want empty export", manifest, string(files["samples.jsonl"]))
 	}
 }
 
@@ -748,6 +848,56 @@ func assertSampleCount(t *testing.T, rec *httptest.ResponseRecorder, want int) {
 	if len(body.Samples) != want {
 		t.Fatalf("len(samples) = %d, want %d", len(body.Samples), want)
 	}
+}
+
+func writeTestJSONL(t *testing.T, dataDir string, day time.Time, samples []model.Sample) {
+	t.Helper()
+	path := filepath.Join(dataDir, "samples-"+day.Format("2006-01-02")+".jsonl")
+	var lines []string
+	for _, sample := range samples {
+		b, err := json.Marshal(sample)
+		if err != nil {
+			t.Fatalf("Marshal(sample) error = %v", err)
+		}
+		lines = append(lines, string(b))
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(%s) error = %v", path, err)
+	}
+}
+
+func readZipFiles(t *testing.T, data []byte) map[string][]byte {
+	t.Helper()
+	reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		t.Fatalf("NewReader(zip) error = %v", err)
+	}
+	files := make(map[string][]byte, len(reader.File))
+	for _, file := range reader.File {
+		rc, err := file.Open()
+		if err != nil {
+			t.Fatalf("Open(%s) error = %v", file.Name, err)
+		}
+		b := new(bytes.Buffer)
+		if _, err := b.ReadFrom(rc); err != nil {
+			_ = rc.Close()
+			t.Fatalf("Read(%s) error = %v", file.Name, err)
+		}
+		if err := rc.Close(); err != nil {
+			t.Fatalf("Close(%s) error = %v", file.Name, err)
+		}
+		files[file.Name] = b.Bytes()
+	}
+	return files
+}
+
+func sortedMapKeys(values map[string][]byte) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func floatPtr(value float64) *float64 {

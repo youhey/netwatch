@@ -22,6 +22,7 @@ type Handler struct {
 	downloadProbes []config.DownloadProbeConfig
 	statusPages    []config.StatusPageConfig
 	thresholds     config.MonitoringThresholds
+	exportStorage  exportStorageConfig
 }
 
 func New(state *collector.State, version string, targets ...[]config.TargetConfig) *Handler {
@@ -52,6 +53,15 @@ func (h *Handler) WithMonitoringThresholds(thresholds config.MonitoringThreshold
 	return h
 }
 
+func (h *Handler) WithExportStorage(dataPath, dataDir, filePattern string) *Handler {
+	h.exportStorage = exportStorageConfig{
+		DataPath:    dataPath,
+		DataDir:     dataDir,
+		FilePattern: filePattern,
+	}
+	return h
+}
+
 func (h *Handler) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", h.health)
@@ -65,6 +75,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /api/download/latest", h.downloadLatest)
 	mux.HandleFunc("GET /api/download/series", h.downloadSeries)
 	mux.HandleFunc("GET /api/status-pages/latest", h.statusPagesLatest)
+	mux.HandleFunc("GET /api/export/ai", h.aiExport)
 	mux.HandleFunc("GET /api/summary", h.summary)
 	mux.HandleFunc("GET /api/services/latest", h.servicesLatest)
 	mux.HandleFunc("GET /api/services/series", h.servicesSeries)
@@ -101,6 +112,7 @@ func (h *Handler) capabilities(w http.ResponseWriter, r *http.Request) {
 			"download_series":                 true,
 			"summary":                         true,
 			"status_pages":                    true,
+			"ai_export":                       true,
 			"services":                        true,
 			"charts":                          true,
 			"charts_download":                 true,

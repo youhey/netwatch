@@ -52,7 +52,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:              cfg.ListenAddr,
-		Handler:           api.New(state, version, cfg.Targets).WithDownloadProbes(cfg.EnabledDownloadProbes()).WithStatusPages(cfg.StatusPages).WithMonitoringThresholds(cfg.MonitoringThresholds).Routes(),
+		Handler:           api.New(state, version, cfg.Targets).WithDownloadProbes(cfg.EnabledDownloadProbes()).WithStatusPages(cfg.StatusPages).WithMonitoringThresholds(cfg.MonitoringThresholds).WithExportStorage(cfg.DataPath, cfg.DataDir, cfg.DataFilePattern).Routes(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

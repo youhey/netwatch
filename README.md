@@ -516,6 +516,15 @@ Provider status の最新状態:
 curl http://127.0.0.1:8080/api/status-pages/latest
 ```
 
+AI 解析用 export:
+
+```bash
+curl -OJ "http://127.0.0.1:8080/api/export/ai?range=7d"
+curl -OJ "http://127.0.0.1:8080/api/export/ai?from=2026-06-01&to=2026-06-08"
+```
+
+`/api/export/ai` は `application/zip` を返します。`range` は `1d` / `7d` / `30d` に対応します。`from` / `to` は `YYYY-MM-DD` 形式で、両方を指定した場合は `from` 以上 `to` 未満の期間を出力します。ZIP には `manifest.json`、`README.md`、`analysis-prompt.md`、`targets.json`、`thresholds.json`、`summary.json`、`samples.jsonl` が含まれます。`targets.json` は監視対象のスナップショットだけを含み、設定ファイル全体や認証情報は出力しません。
+
 実サービス group の最新状態:
 
 ```bash
@@ -1068,6 +1077,7 @@ dig www.google.com
 curl http://netpi:8080/api/health
 curl http://netpi:8080/api/latest
 curl http://netpi:8080/api/summary
+curl -OJ "http://netpi:8080/api/export/ai?range=1d"
 curl http://netpi:8080/api/services/latest
 curl "http://netpi:8080/api/services/summary?range=1h"
 curl http://netpi:8080/api/monitoring/status
