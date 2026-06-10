@@ -24,6 +24,7 @@ func TestCollectMonitoringReasonsCoversCodes(t *testing.T) {
 		{Type: "http", Group: "steam", Name: "steam_status", OK: &ok, TotalMs: floatPtr(100)},
 		{Type: "download", Name: "r2_1mb", OK: &failed, Error: "timeout"},
 		{Type: "download", Name: "r2_10mb", OK: &ok, Mbps: floatPtr(2)},
+		{Type: "status_page", Name: "github_status", OK: &failed, Level: "critical"},
 	}
 
 	reasons := collectMonitoringReasons(samples, thresholds)
@@ -35,15 +36,22 @@ func TestCollectMonitoringReasonsCoversCodes(t *testing.T) {
 		"external_rtt_high",
 		"dns_failure",
 		"dns_slow",
-		"http_timeout",
-		"http_slow",
-		"service_failure",
-		"service_group_degraded",
 		"download_failure",
 		"download_slow",
 	} {
 		if !codes[code] {
 			t.Fatalf("reason codes = %+v, want %s", codes, code)
+		}
+	}
+	for _, code := range []string{
+		"http_timeout",
+		"http_slow",
+		"service_failure",
+		"service_group_degraded",
+		"provider_status",
+	} {
+		if codes[code] {
+			t.Fatalf("reason codes = %+v, want %s excluded from core monitoring", codes, code)
 		}
 	}
 }

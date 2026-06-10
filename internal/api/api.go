@@ -503,6 +503,7 @@ type serviceSummaryResponse struct {
 
 func groupServiceLatest(samples []model.Sample, thresholds config.MonitoringThresholds) []serviceGroupResponse {
 	groups := make(map[string]*serviceGroupResponse)
+	serviceFailures := serviceFailureCounts(samples)
 	for _, sample := range samples {
 		if isIgnoredServiceTarget(sample) {
 			continue
@@ -524,7 +525,7 @@ func groupServiceLatest(samples []model.Sample, thresholds config.MonitoringThre
 			entry.Category = sample.Category
 		}
 		entry.Targets = append(entry.Targets, sample)
-		level := levelForReasons(collectMonitoringReasons([]model.Sample{sample}, thresholds))
+		level := levelForReasons(httpReasons(sample, thresholds.HTTP, serviceFailures))
 		if severityRank(level) > severityRank(entry.Status) {
 			entry.Status = level
 		}

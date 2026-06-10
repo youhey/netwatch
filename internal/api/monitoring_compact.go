@@ -132,13 +132,13 @@ func compactTitle(level string) string {
 	case "unknown":
 		return "Monitoring status unavailable"
 	default:
-		return "All systems operational"
+		return "Network is stable"
 	}
 }
 
 func compactMessage(level string, reason *monitoringReason) string {
 	if level == "ok" {
-		return "All probes are healthy."
+		return "Core network probes are within thresholds."
 	}
 	if level == "unknown" || reason == nil {
 		return "Netwatch cannot determine current network health."

@@ -32,7 +32,7 @@ func TestMonitoringCompactOK(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("Unmarshal() error = %v", err)
 	}
-	if body.Source != "netwatch" || body.Level != "ok" || body.Label != "NET OK" || body.Alert || body.Title != "All systems operational" || body.Message != "All probes are healthy." {
+	if body.Source != "netwatch" || body.Level != "ok" || body.Label != "NET OK" || body.Alert || body.Title != "Network is stable" || body.Message != "Core network probes are within thresholds." {
 		t.Fatalf("body = %+v, want compact OK response", body)
 	}
 	if body.IssueCount != 0 || body.PrimaryReason != nil {
@@ -68,6 +68,58 @@ func TestMonitoringCompactProviderStatusWarning(t *testing.T) {
 	}
 	if body.ProviderStatus.Level != "warning" || !body.ProviderStatus.Alert || body.ProviderStatus.IssueCount != 1 || len(body.ProviderStatus.Providers) != 1 {
 		t.Fatalf("provider_status = %+v, want warning alert", body.ProviderStatus)
+	}
+	if body.Level != "ok" || body.Alert || body.IssueCount != 0 || body.PrimaryReason != nil {
+		t.Fatalf("body = %+v, want provider status excluded from core monitoring", body)
+	}
+}
+
+func TestMonitoringCompactIgnoresHTTPServiceIssue(t *testing.T) {
+	state := collector.NewState()
+	ok := true
+	failed := false
+	now := time.Now()
+	state.Load([]model.Sample{
+		{Timestamp: now, Type: "ping", Name: "gateway", OK: &ok, LossPercent: floatPtr(0), RTTAvgMs: floatPtr(1)},
+		{Timestamp: now, Type: "http", Group: "github", Category: "dev", Name: "github_home", OK: &failed, TotalMs: floatPtr(1), Error: "unexpected status 503"},
+		{Timestamp: now, Type: "http", Group: "chatgpt", Category: "ai", Name: "chatgpt_home", OK: &ok, TotalMs: floatPtr(6000)},
+	})
+	handler := New(state, "test").Routes()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/monitoring/compact", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	var body monitoringCompactResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if body.Level != "ok" || body.Alert || body.IssueCount != 0 || body.PrimaryReason != nil {
+		t.Fatalf("body = %+v, want HTTP service issues excluded from core monitoring", body)
+	}
+}
+
+func TestMonitoringCompactMixedCoreAndHTTPUsesCoreReasons(t *testing.T) {
+	state := collector.NewState()
+	ok := true
+	failed := false
+	now := time.Now()
+	state.Load([]model.Sample{
+		{Timestamp: now, Type: "ping", Name: "gateway", OK: &ok, LossPercent: floatPtr(0), RTTAvgMs: floatPtr(10)},
+		{Timestamp: now, Type: "http", Group: "github", Category: "dev", Name: "github_home", OK: &failed, TotalMs: floatPtr(1), Error: "unexpected status 503"},
+	})
+	handler := New(state, "test").Routes()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/monitoring/compact", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	var body monitoringCompactResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if body.Level != "warning" || !body.Alert || body.IssueCount != 1 || body.PrimaryReason == nil || body.PrimaryReason.Code != "gateway_rtt_high" {
+		t.Fatalf("body = %+v, want core network warning only", body)
 	}
 }
 

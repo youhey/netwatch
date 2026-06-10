@@ -154,6 +154,29 @@ func TestBuildMonitoringStatusHistoryTwoHourFiveMinuteBuckets(t *testing.T) {
 	}
 }
 
+func TestBuildMonitoringStatusHistoryIgnoresHTTPServiceIssues(t *testing.T) {
+	ok := true
+	failed := false
+	now := time.Date(2026, 6, 7, 13, 30, 0, 0, time.Local)
+	bucket := time.Hour
+	duration := 24 * time.Hour
+	end := nextBucketBoundary(now, bucket)
+	start := end.Add(-duration)
+	samples := []model.Sample{
+		{Timestamp: start.Add(time.Hour + 10*time.Minute), Type: "http", Group: "github", Name: "github_home", OK: &failed, Error: "unexpected status 503"},
+		{Timestamp: start.Add(time.Hour + 20*time.Minute), Type: "http", Group: "chatgpt", Name: "chatgpt_home", OK: &ok, TotalMs: floatPtr(6000)},
+	}
+
+	body := buildMonitoringStatusHistory(samples, config.DefaultMonitoringThresholds(), "24h", "1h", duration, bucket, start, end, now)
+
+	if body.Points[1].Level != "unknown" || body.Points[1].Alert || body.Points[1].SampleCount != 0 || body.Points[1].WarningCount != 0 {
+		t.Fatalf("points[1] = %+v, want HTTP services excluded from status history", body.Points[1])
+	}
+	if body.Summary.UnknownCount != 24 {
+		t.Fatalf("summary = %+v, want HTTP-only history ignored", body.Summary)
+	}
+}
+
 func TestMonitoringStatusHistoryEndpointTwoHourFiveMinuteBuckets(t *testing.T) {
 	handler := New(collector.NewState(), "test").Routes()
 

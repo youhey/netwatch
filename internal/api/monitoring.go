@@ -53,7 +53,7 @@ func buildMonitoringStatus(samples []model.Sample, thresholds config.MonitoringT
 			GeneratedAt: generatedAt,
 			Level:       "ok",
 			Title:       titleForLevel("ok"),
-			Message:     "all probes healthy",
+			Message:     "core network probes within thresholds",
 			Reasons:     []monitoringReason{},
 		}
 	}
@@ -89,11 +89,9 @@ func monitoringThresholdsResponse(thresholds config.MonitoringThresholds, genera
 
 func collectMonitoringReasons(samples []model.Sample, thresholds config.MonitoringThresholds) []monitoringReason {
 	reasons := make([]monitoringReason, 0)
-	serviceFailures := serviceFailureCounts(samples)
-	serviceStats := serviceGroupStats(samples)
 
 	for _, sample := range samples {
-		if isIgnoredServiceTarget(sample) {
+		if !isCoreMonitoringSample(sample) {
 			continue
 		}
 		switch sample.Type {
@@ -101,20 +99,24 @@ func collectMonitoringReasons(samples []model.Sample, thresholds config.Monitori
 			reasons = append(reasons, pingReasons(sample, thresholds.Ping)...)
 		case "dns":
 			reasons = append(reasons, dnsReasons(sample, thresholds.DNS)...)
-		case "http":
-			reasons = append(reasons, httpReasons(sample, thresholds.HTTP, serviceFailures)...)
 		case "download":
 			reasons = append(reasons, downloadReasons(sample, thresholds.Download)...)
-		case "status_page":
-			reasons = append(reasons, statusPageReasons(sample)...)
 		}
 	}
 
-	reasons = append(reasons, serviceGroupReasons(serviceStats, thresholds.Service)...)
 	for i := range reasons {
 		reasons[i].index = i
 	}
 	return reasons
+}
+
+func isCoreMonitoringSample(sample model.Sample) bool {
+	switch sample.Type {
+	case "ping", "dns", "download":
+		return true
+	default:
+		return false
+	}
 }
 
 func pingReasons(sample model.Sample, thresholds config.PingThresholds) []monitoringReason {
@@ -346,19 +348,14 @@ func compareReasonPriority(left, right monitoringReason) bool {
 
 func reasonPriority(code string) int {
 	priorities := map[string]int{
-		"gateway_loss":           10,
-		"packet_loss":            20,
-		"download_slow":          30,
-		"download_failure":       40,
-		"http_timeout":           50,
-		"dns_failure":            60,
-		"external_rtt_high":      70,
-		"gateway_rtt_high":       80,
-		"dns_slow":               90,
-		"http_slow":              100,
-		"service_failure":        110,
-		"service_group_degraded": 120,
-		"provider_status":        130,
+		"gateway_loss":      10,
+		"packet_loss":       20,
+		"download_slow":     30,
+		"download_failure":  40,
+		"dns_failure":       50,
+		"external_rtt_high": 60,
+		"gateway_rtt_high":  70,
+		"dns_slow":          80,
 	}
 	if priority, ok := priorities[code]; ok {
 		return priority
@@ -368,7 +365,7 @@ func reasonPriority(code string) int {
 
 func monitoringMessage(primary monitoringReason, reasons []monitoringReason) string {
 	if len(reasons) == 0 {
-		return "all probes healthy"
+		return "core network probes within thresholds"
 	}
 	messages := []string{reasonMessage(primary)}
 	for _, reason := range reasons {

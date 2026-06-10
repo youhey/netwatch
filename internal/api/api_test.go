@@ -550,7 +550,7 @@ func TestServicesSummary(t *testing.T) {
 	}
 }
 
-func TestMonitoringStatusWarnsOnHTTPFailure(t *testing.T) {
+func TestMonitoringStatusIgnoresHTTPFailure(t *testing.T) {
 	state := collector.NewState()
 	ok := true
 	failed := false
@@ -572,14 +572,8 @@ func TestMonitoringStatusWarnsOnHTTPFailure(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("Unmarshal() error = %v", err)
 	}
-	if !body.Alert || body.Level != "warning" {
-		t.Fatalf("body = %+v, want warning alert", body)
-	}
-	if body.Source != "netwatch" || body.Title != "NET WARNING" || body.StatusID == "" || body.PrimaryReason == nil || body.PrimaryReason.Code != "service_failure" || len(body.Reasons) != 1 {
-		t.Fatalf("body = %+v, want service failure reason", body)
-	}
-	if body.Message != "service steam_store failure" {
-		t.Fatalf("Message = %q, want service failure summary", body.Message)
+	if body.Alert || body.Level != "ok" || body.StatusID != "ok" || body.PrimaryReason != nil || len(body.Reasons) != 0 {
+		t.Fatalf("body = %+v, want HTTP service failure excluded from core monitoring", body)
 	}
 }
 
@@ -605,7 +599,7 @@ func TestMonitoringStatusWarnsOnDownloadSlow(t *testing.T) {
 	}
 }
 
-func TestMonitoringStatusWarnsOnProviderStatus(t *testing.T) {
+func TestMonitoringStatusIgnoresProviderStatus(t *testing.T) {
 	state := collector.NewState()
 	failed := false
 	state.Load([]model.Sample{
@@ -621,8 +615,8 @@ func TestMonitoringStatusWarnsOnProviderStatus(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("Unmarshal() error = %v", err)
 	}
-	if body.Level != "warning" || body.PrimaryReason == nil || body.PrimaryReason.Code != "provider_status" {
-		t.Fatalf("body = %+v, want provider status warning", body)
+	if body.Level != "ok" || body.Alert || body.PrimaryReason != nil || len(body.Reasons) != 0 {
+		t.Fatalf("body = %+v, want provider status excluded from core monitoring", body)
 	}
 }
 
@@ -666,7 +660,7 @@ func TestMonitoringStatusOK(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("Unmarshal() error = %v", err)
 	}
-	if body.Alert || body.Source != "netwatch" || body.StatusID != "ok" || body.Level != "ok" || body.Title != "NET OK" || body.Message != "all probes healthy" || body.PrimaryReason != nil || len(body.Reasons) != 0 {
+	if body.Alert || body.Source != "netwatch" || body.StatusID != "ok" || body.Level != "ok" || body.Title != "NET OK" || body.Message != "core network probes within thresholds" || body.PrimaryReason != nil || len(body.Reasons) != 0 {
 		t.Fatalf("body = %+v, want ok", body)
 	}
 }

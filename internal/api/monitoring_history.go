@@ -122,9 +122,8 @@ func buildMonitoringStatusHistoryPoint(start, end time.Time, samples []model.Sam
 	}
 
 	point.SampleCount = len(monitoredSamples)
-	serviceFailures := serviceFailureCounts(monitoredSamples)
 	for _, sample := range monitoredSamples {
-		switch sampleMonitoringHistoryLevel(sample, thresholds, serviceFailures) {
+		switch sampleMonitoringHistoryLevel(sample, thresholds) {
 		case "critical":
 			point.CriticalCount++
 		case "warning":
@@ -141,15 +140,13 @@ func buildMonitoringStatusHistoryPoint(start, end time.Time, samples []model.Sam
 	return point
 }
 
-func sampleMonitoringHistoryLevel(sample model.Sample, thresholds config.MonitoringThresholds, serviceFailures map[string]int) string {
+func sampleMonitoringHistoryLevel(sample model.Sample, thresholds config.MonitoringThresholds) string {
 	var reasons []monitoringReason
 	switch sample.Type {
 	case "ping":
 		reasons = pingReasons(sample, thresholds.Ping)
 	case "dns":
 		reasons = dnsReasons(sample, thresholds.DNS)
-	case "http":
-		reasons = httpReasons(sample, thresholds.HTTP, serviceFailures)
 	case "download":
 		reasons = downloadReasons(sample, thresholds.Download)
 	default:
@@ -179,7 +176,7 @@ func samplesInRange(samples []model.Sample, start, end time.Time) []model.Sample
 func filterMonitoringHistorySamples(samples []model.Sample) []model.Sample {
 	filtered := make([]model.Sample, 0, len(samples))
 	for _, sample := range samples {
-		if isIgnoredServiceTarget(sample) {
+		if !isCoreMonitoringSample(sample) {
 			continue
 		}
 		filtered = append(filtered, sample)
