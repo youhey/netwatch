@@ -10,24 +10,25 @@ import (
 )
 
 type Config struct {
-	ListenAddr           string                `json:"listen_addr"`
-	DataPath             string                `json:"data_path"`
-	DataDir              string                `json:"data_dir"`
-	DataFilePattern      string                `json:"data_file_pattern"`
-	RetentionDays        int                   `json:"retention_days"`
-	PingIntervalSeconds  int                   `json:"ping_interval_seconds"`
-	PingCount            int                   `json:"ping_count"`
-	PingTimeoutSeconds   int                   `json:"ping_timeout_seconds"`
-	DNSIntervalSeconds   int                   `json:"dns_interval_seconds"`
-	DNSTimeoutSeconds    int                   `json:"dns_timeout_seconds"`
-	HTTPIntervalSeconds  int                   `json:"http_interval_seconds"`
-	HTTPTimeoutSeconds   int                   `json:"http_timeout_seconds"`
-	HTTPDisableKeepAlive bool                  `json:"http_disable_keepalive"`
-	HTTPMaxBodyBytes     int64                 `json:"http_max_body_bytes"`
-	MonitoringThresholds MonitoringThresholds  `json:"monitoring_thresholds"`
-	DownloadProbes       []DownloadProbeConfig `json:"download_probes"`
-	StatusPages          []StatusPageConfig    `json:"status_pages"`
-	Targets              []TargetConfig        `json:"targets"`
+	ListenAddr           string                   `json:"listen_addr"`
+	DataPath             string                   `json:"data_path"`
+	DataDir              string                   `json:"data_dir"`
+	DataFilePattern      string                   `json:"data_file_pattern"`
+	RetentionDays        int                      `json:"retention_days"`
+	PingIntervalSeconds  int                      `json:"ping_interval_seconds"`
+	PingCount            int                      `json:"ping_count"`
+	PingTimeoutSeconds   int                      `json:"ping_timeout_seconds"`
+	DNSIntervalSeconds   int                      `json:"dns_interval_seconds"`
+	DNSTimeoutSeconds    int                      `json:"dns_timeout_seconds"`
+	HTTPIntervalSeconds  int                      `json:"http_interval_seconds"`
+	HTTPTimeoutSeconds   int                      `json:"http_timeout_seconds"`
+	HTTPDisableKeepAlive bool                     `json:"http_disable_keepalive"`
+	HTTPMaxBodyBytes     int64                    `json:"http_max_body_bytes"`
+	MonitoringThresholds MonitoringThresholds     `json:"monitoring_thresholds"`
+	DownloadProbes       []DownloadProbeConfig    `json:"download_probes"`
+	RemoteSpeedProbes    []RemoteSpeedProbeConfig `json:"remote_speed_probes"`
+	StatusPages          []StatusPageConfig       `json:"status_pages"`
+	Targets              []TargetConfig           `json:"targets"`
 }
 
 type Threshold struct {
@@ -101,6 +102,18 @@ type StatusPageConfig struct {
 	URL                 string   `json:"url"`
 	IntervalSeconds     int      `json:"interval_seconds"`
 	ImportantComponents []string `json:"important_components"`
+}
+
+type RemoteSpeedProbeConfig struct {
+	Name            string `json:"name"`
+	Label           string `json:"label"`
+	URL             string `json:"url"`
+	CapabilitiesURL string `json:"capabilities_url"`
+	HealthURL       string `json:"health_url"`
+	IntervalSeconds int    `json:"interval_seconds"`
+	TimeoutSeconds  int    `json:"timeout_seconds"`
+	Enabled         bool   `json:"enabled"`
+	DisplayOrder    int    `json:"display_order"`
 }
 
 type RetryOnAlertConfig struct {
@@ -213,7 +226,7 @@ func (c Config) Validate() error {
 		return errors.New("targets must not be empty")
 	}
 
-	names := make(map[string]struct{}, len(c.Targets)+len(c.DownloadProbes)+len(c.StatusPages))
+	names := make(map[string]struct{}, len(c.Targets)+len(c.DownloadProbes)+len(c.StatusPages)+len(c.RemoteSpeedProbes))
 	for i, target := range c.Targets {
 		if strings.TrimSpace(target.Name) == "" {
 			return fmt.Errorf("targets[%d].name is required", i)
@@ -327,6 +340,43 @@ func (c Config) Validate() error {
 		}
 		if statusPage.DisplayOrder < 0 {
 			return fmt.Errorf("status_pages[%d].display_order must be greater than or equal to 0", i)
+		}
+	}
+	for i, remoteSpeedProbe := range c.RemoteSpeedProbes {
+		if !remoteSpeedProbe.Enabled {
+			continue
+		}
+		if strings.TrimSpace(remoteSpeedProbe.Name) == "" {
+			return fmt.Errorf("remote_speed_probes[%d].name is required", i)
+		}
+		if _, ok := names[remoteSpeedProbe.Name]; ok {
+			return fmt.Errorf("duplicate target name: %s", remoteSpeedProbe.Name)
+		}
+		names[remoteSpeedProbe.Name] = struct{}{}
+		if strings.TrimSpace(remoteSpeedProbe.URL) == "" {
+			return fmt.Errorf("remote_speed_probes[%d].url is required", i)
+		}
+		if err := validateHTTPURL(remoteSpeedProbe.URL); err != nil {
+			return fmt.Errorf("remote_speed_probes[%d].url is invalid: %w", i, err)
+		}
+		if strings.TrimSpace(remoteSpeedProbe.CapabilitiesURL) != "" {
+			if err := validateHTTPURL(remoteSpeedProbe.CapabilitiesURL); err != nil {
+				return fmt.Errorf("remote_speed_probes[%d].capabilities_url is invalid: %w", i, err)
+			}
+		}
+		if strings.TrimSpace(remoteSpeedProbe.HealthURL) != "" {
+			if err := validateHTTPURL(remoteSpeedProbe.HealthURL); err != nil {
+				return fmt.Errorf("remote_speed_probes[%d].health_url is invalid: %w", i, err)
+			}
+		}
+		if remoteSpeedProbe.IntervalSeconds <= 0 {
+			return fmt.Errorf("remote_speed_probes[%d].interval_seconds must be greater than 0", i)
+		}
+		if remoteSpeedProbe.TimeoutSeconds <= 0 {
+			return fmt.Errorf("remote_speed_probes[%d].timeout_seconds must be greater than 0", i)
+		}
+		if remoteSpeedProbe.DisplayOrder < 0 {
+			return fmt.Errorf("remote_speed_probes[%d].display_order must be greater than or equal to 0", i)
 		}
 	}
 
@@ -468,6 +518,17 @@ func (c Config) TimeoutSeconds(target TargetConfig) int {
 func (c Config) EnabledDownloadProbes() []DownloadProbeConfig {
 	probes := make([]DownloadProbeConfig, 0, len(c.DownloadProbes))
 	for _, probe := range c.DownloadProbes {
+		if !probe.Enabled {
+			continue
+		}
+		probes = append(probes, probe)
+	}
+	return probes
+}
+
+func (c Config) EnabledRemoteSpeedProbes() []RemoteSpeedProbeConfig {
+	probes := make([]RemoteSpeedProbeConfig, 0, len(c.RemoteSpeedProbes))
+	for _, probe := range c.RemoteSpeedProbes {
 		if !probe.Enabled {
 			continue
 		}

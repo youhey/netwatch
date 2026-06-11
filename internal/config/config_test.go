@@ -258,6 +258,77 @@ func TestLoadDownloadProbes(t *testing.T) {
 	}
 }
 
+func TestLoadRemoteSpeedProbes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "netwatch.json")
+	content := `{
+  "listen_addr": "127.0.0.1:8080",
+  "data_dir": "/var/lib/netwatch",
+  "data_file_pattern": "samples-%Y-%m-%d.jsonl",
+  "retention_days": 7,
+  "remote_speed_probes": [
+    {
+      "name": "scum_speedprobe",
+      "label": "Scum Speedprobe",
+      "display_order": 30,
+      "url": "http://scum:8090/api/v1/speed/latest",
+      "capabilities_url": "http://scum:8090/api/v1/capabilities",
+      "health_url": "http://scum:8090/api/v1/health",
+      "interval_seconds": 300,
+      "timeout_seconds": 10,
+      "enabled": true
+    },
+    {
+      "name": "disabled",
+      "enabled": false
+    }
+  ],
+  "targets": [
+    {
+      "name": "home",
+      "type": "http",
+      "url": "https://example.com/"
+    }
+  ]
+}`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(cfg.RemoteSpeedProbes) != 2 {
+		t.Fatalf("len(RemoteSpeedProbes) = %d, want 2", len(cfg.RemoteSpeedProbes))
+	}
+	probes := cfg.EnabledRemoteSpeedProbes()
+	if len(probes) != 1 {
+		t.Fatalf("len(EnabledRemoteSpeedProbes) = %d, want 1", len(probes))
+	}
+	probe := probes[0]
+	if probe.Name != "scum_speedprobe" || probe.Label != "Scum Speedprobe" || probe.DisplayOrder != 30 || probe.URL != "http://scum:8090/api/v1/speed/latest" || probe.CapabilitiesURL == "" || probe.HealthURL == "" || probe.IntervalSeconds != 300 || probe.TimeoutSeconds != 10 {
+		t.Fatalf("probe = %+v, want remote speedprobe settings loaded", probe)
+	}
+}
+
+func TestValidateRemoteSpeedProbeRequiresValidEnabledConfig(t *testing.T) {
+	cfg := Default()
+	cfg.Targets = []TargetConfig{{Name: "home", Type: "http", URL: "https://example.com/"}}
+	cfg.RemoteSpeedProbes = []RemoteSpeedProbeConfig{
+		{
+			Name:            "scum_speedprobe",
+			URL:             "ftp://scum/api/v1/speed/latest",
+			IntervalSeconds: 300,
+			TimeoutSeconds:  10,
+			Enabled:         true,
+		},
+	}
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() error = nil, want invalid URL error")
+	}
+}
+
 func TestDownloadRetryOnAlertDefaults(t *testing.T) {
 	probe := DownloadProbeConfig{
 		Name:            "r2_10mb",

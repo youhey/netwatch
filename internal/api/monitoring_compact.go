@@ -21,20 +21,21 @@ type monitoringCompactSupportResponse struct {
 }
 
 type monitoringCompactResponse struct {
-	Source         string                        `json:"source"`
-	GeneratedAt    time.Time                     `json:"generated_at"`
-	Level          string                        `json:"level"`
-	Label          string                        `json:"label"`
-	Alert          bool                          `json:"alert"`
-	Title          string                        `json:"title"`
-	Message        string                        `json:"message"`
-	IssueCount     int                           `json:"issue_count"`
-	PrimaryReason  *monitoringCompactReason      `json:"primary_reason"`
-	Reasons        []monitoringCompactReason     `json:"reasons"`
-	History        monitoringCompactHistory      `json:"history"`
-	NetworkStatus  compactNetworkStatusResponse  `json:"network_status"`
-	ServiceHealth  compactServiceHealthResponse  `json:"service_health"`
-	ProviderStatus compactProviderStatusResponse `json:"provider_status"`
+	Source           string                        `json:"source"`
+	GeneratedAt      time.Time                     `json:"generated_at"`
+	Level            string                        `json:"level"`
+	Label            string                        `json:"label"`
+	Alert            bool                          `json:"alert"`
+	Title            string                        `json:"title"`
+	Message          string                        `json:"message"`
+	IssueCount       int                           `json:"issue_count"`
+	PrimaryReason    *monitoringCompactReason      `json:"primary_reason"`
+	Reasons          []monitoringCompactReason     `json:"reasons"`
+	History          monitoringCompactHistory      `json:"history"`
+	NetworkStatus    compactNetworkStatusResponse  `json:"network_status"`
+	ServiceHealth    compactServiceHealthResponse  `json:"service_health"`
+	ThroughputStatus throughputStatusResponse      `json:"throughput_status"`
+	ProviderStatus   compactProviderStatusResponse `json:"provider_status"`
 }
 
 type compactNetworkStatusResponse struct {
@@ -75,23 +76,24 @@ func monitoringCompactSupport() monitoringCompactSupportResponse {
 	}
 }
 
-func buildMonitoringCompact(status monitoringStatusResponse, history monitoringStatusHistoryResponse, generatedAt time.Time, thresholds config.MonitoringThresholds, serviceSamples, statusPageSamples []model.Sample) monitoringCompactResponse {
+func buildMonitoringCompact(status monitoringStatusResponse, history monitoringStatusHistoryResponse, generatedAt time.Time, thresholds config.MonitoringThresholds, serviceSamples, speedprobeSamples, statusPageSamples []model.Sample) monitoringCompactResponse {
 	networkStatus := compactNetworkStatus(status)
 	return monitoringCompactResponse{
-		Source:         "netwatch",
-		GeneratedAt:    generatedAt,
-		Level:          networkStatus.Level,
-		Label:          networkStatus.Label,
-		Alert:          networkStatus.Alert,
-		Title:          networkStatus.Title,
-		Message:        networkStatus.Message,
-		IssueCount:     networkStatus.IssueCount,
-		PrimaryReason:  compactReason(status.PrimaryReason),
-		Reasons:        networkStatus.Reasons,
-		History:        compactHistory(history),
-		NetworkStatus:  networkStatus,
-		ServiceHealth:  compactServiceHealth(serviceSamples, thresholds),
-		ProviderStatus: compactProviderStatus(statusPageSamples),
+		Source:           "netwatch",
+		GeneratedAt:      generatedAt,
+		Level:            networkStatus.Level,
+		Label:            networkStatus.Label,
+		Alert:            networkStatus.Alert,
+		Title:            networkStatus.Title,
+		Message:          networkStatus.Message,
+		IssueCount:       networkStatus.IssueCount,
+		PrimaryReason:    compactReason(status.PrimaryReason),
+		Reasons:          networkStatus.Reasons,
+		History:          compactHistory(history),
+		NetworkStatus:    networkStatus,
+		ServiceHealth:    compactServiceHealth(serviceSamples, thresholds),
+		ThroughputStatus: throughputStatus(speedprobeSamples),
+		ProviderStatus:   compactProviderStatus(statusPageSamples),
 	}
 }
 

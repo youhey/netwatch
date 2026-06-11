@@ -8,6 +8,7 @@ import (
 	"github.com/youhey/netwatch/internal/config"
 	"github.com/youhey/netwatch/internal/model"
 	"github.com/youhey/netwatch/internal/probe"
+	"github.com/youhey/netwatch/internal/speedprobe"
 )
 
 type Storage interface {
@@ -34,6 +35,10 @@ type StatusPageProbe interface {
 	Get(ctx context.Context, url string, importantComponents []string) (probe.StatusPageResult, error)
 }
 
+type SpeedprobeClient interface {
+	Latest(ctx context.Context, url string, timeout time.Duration) (speedprobe.LatestResponse, error)
+}
+
 type Collector struct {
 	cfg                  config.Config
 	ping                 PingProbe
@@ -41,16 +46,24 @@ type Collector struct {
 	http                 HTTPProbe
 	download             DownloadProbe
 	statusPage           StatusPageProbe
+	speedprobe           SpeedprobeClient
 	storage              Storage
 	state                *State
 	downloadRetries      map[string]*downloadRetryRuntime
 	lastStatusPageLevels map[string]string
+	speedprobeSeen       map[string]struct{}
 }
 
 func New(cfg config.Config, ping PingProbe, dns DNSProbe, http HTTPProbe, download DownloadProbe, storage Storage, state *State, statusPage ...StatusPageProbe) *Collector {
 	var statusPageProbe StatusPageProbe
 	if len(statusPage) > 0 {
 		statusPageProbe = statusPage[0]
+	}
+	speedprobeSeen := make(map[string]struct{})
+	if state != nil {
+		for _, sample := range state.LatestByType("speedprobe") {
+			speedprobeSeen[speedprobeDedupeKey(sample)] = struct{}{}
+		}
 	}
 	return &Collector{
 		cfg:                  cfg,
@@ -63,12 +76,19 @@ func New(cfg config.Config, ping PingProbe, dns DNSProbe, http HTTPProbe, downlo
 		state:                state,
 		downloadRetries:      make(map[string]*downloadRetryRuntime),
 		lastStatusPageLevels: make(map[string]string),
+		speedprobeSeen:       speedprobeSeen,
 	}
+}
+
+func (c *Collector) WithSpeedprobe(client SpeedprobeClient) *Collector {
+	c.speedprobe = client
+	return c
 }
 
 func (c *Collector) Run(ctx context.Context) {
 	downloadProbes := c.cfg.EnabledDownloadProbes()
-	nextRuns := make(map[string]time.Time, len(c.cfg.Targets)+len(downloadProbes)+len(c.cfg.StatusPages))
+	remoteSpeedProbes := c.cfg.EnabledRemoteSpeedProbes()
+	nextRuns := make(map[string]time.Time, len(c.cfg.Targets)+len(downloadProbes)+len(c.cfg.StatusPages)+len(remoteSpeedProbes))
 	now := time.Now()
 	for _, target := range c.cfg.Targets {
 		nextRuns["target:"+target.Name] = now
@@ -78,6 +98,10 @@ func (c *Collector) Run(ctx context.Context) {
 	}
 	for _, statusPage := range c.cfg.StatusPages {
 		nextRuns["status_page:"+statusPage.Name] = now
+	}
+	for _, remoteSpeedProbe := range remoteSpeedProbes {
+		nextRuns["speedprobe:"+remoteSpeedProbe.Name] = now
+		log.Printf("speedprobe collector started name=%s url=%s", remoteSpeedProbe.Name, remoteSpeedProbe.URL)
 	}
 
 	ticker := time.NewTicker(time.Second)
@@ -122,6 +146,15 @@ func (c *Collector) collectDue(ctx context.Context, nextRuns map[string]time.Tim
 		c.collectStatusPage(ctx, statusPage)
 		nextRuns[key] = now.Add(time.Duration(c.cfg.StatusPageIntervalSeconds(statusPage)) * time.Second)
 	}
+	for _, remoteSpeedProbe := range c.cfg.EnabledRemoteSpeedProbes() {
+		key := "speedprobe:" + remoteSpeedProbe.Name
+		if now.Before(nextRuns[key]) {
+			continue
+		}
+
+		c.collectRemoteSpeedProbe(ctx, remoteSpeedProbe)
+		nextRuns[key] = now.Add(time.Duration(remoteSpeedProbe.IntervalSeconds) * time.Second)
+	}
 }
 
 func (c *Collector) collectTarget(ctx context.Context, target config.TargetConfig) {
@@ -152,6 +185,41 @@ func (c *Collector) collectStatusPage(ctx context.Context, statusPage config.Sta
 		return
 	}
 	c.state.Add(sample)
+}
+
+func (c *Collector) collectRemoteSpeedProbe(ctx context.Context, remoteSpeedProbe config.RemoteSpeedProbeConfig) {
+	if c.speedprobe == nil {
+		log.Printf("speedprobe latest fetch skipped source=%s error=%q", remoteSpeedProbe.Name, "speedprobe client is not configured")
+		return
+	}
+	timeout := time.Duration(remoteSpeedProbe.TimeoutSeconds) * time.Second
+	latest, err := c.speedprobe.Latest(ctx, remoteSpeedProbe.URL, timeout)
+	if err != nil {
+		log.Printf("speedprobe latest fetch failed source=%s error=%v", remoteSpeedProbe.Name, err)
+		return
+	}
+	collectedAt := time.Now().Local()
+	for _, probeResult := range latest.Probes {
+		sample, ok := speedprobeSample(remoteSpeedProbe, latest.Observer, probeResult, collectedAt)
+		if !ok {
+			continue
+		}
+		key := speedprobeDedupeKey(sample)
+		if _, seen := c.speedprobeSeen[key]; seen {
+			continue
+		}
+		c.speedprobeSeen[key] = struct{}{}
+		if err := c.storage.Append(sample); err != nil {
+			log.Printf("append sample failed: type=%s source=%s name=%s error=%v", sample.Type, sample.Source, sample.Name, err)
+			continue
+		}
+		c.state.Add(sample)
+		if sample.Mbps != nil {
+			log.Printf("speedprobe sample collected source=%s probe=%s status=%s mbps=%.3f", sample.Source, sample.Name, sample.Status, *sample.Mbps)
+		} else {
+			log.Printf("speedprobe sample collected source=%s probe=%s status=%s", sample.Source, sample.Name, sample.Status)
+		}
+	}
 }
 
 func (c *Collector) measure(ctx context.Context, target config.TargetConfig) model.Sample {

@@ -14,6 +14,7 @@ import (
 	"github.com/youhey/netwatch/internal/collector"
 	"github.com/youhey/netwatch/internal/config"
 	"github.com/youhey/netwatch/internal/probe"
+	"github.com/youhey/netwatch/internal/speedprobe"
 	"github.com/youhey/netwatch/internal/storage"
 )
 
@@ -47,12 +48,13 @@ func main() {
 	httpProbe := probe.NewHTTP(cfg.HTTPDisableKeepAlive, cfg.HTTPMaxBodyBytes)
 	downloadProbe := probe.NewDownload()
 	statusPageProbe := probe.NewStatusPage()
-	c := collector.New(cfg, probe.Fping{}, probe.DNS{}, httpProbe, downloadProbe, jsonl, state, statusPageProbe)
+	speedprobeClient := speedprobe.NewClient()
+	c := collector.New(cfg, probe.Fping{}, probe.DNS{}, httpProbe, downloadProbe, jsonl, state, statusPageProbe).WithSpeedprobe(speedprobeClient)
 	go c.Run(rootCtx)
 
 	server := &http.Server{
 		Addr:              cfg.ListenAddr,
-		Handler:           api.New(state, version, cfg.Targets).WithDownloadProbes(cfg.EnabledDownloadProbes()).WithStatusPages(cfg.StatusPages).WithMonitoringThresholds(cfg.MonitoringThresholds).WithExportStorage(cfg.DataPath, cfg.DataDir, cfg.DataFilePattern).Routes(),
+		Handler:           api.New(state, version, cfg.Targets).WithDownloadProbes(cfg.EnabledDownloadProbes()).WithRemoteSpeedProbes(cfg.EnabledRemoteSpeedProbes()).WithStatusPages(cfg.StatusPages).WithMonitoringThresholds(cfg.MonitoringThresholds).WithExportStorage(cfg.DataPath, cfg.DataDir, cfg.DataFilePattern).Routes(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

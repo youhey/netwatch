@@ -159,18 +159,24 @@ func TestAIExportReturnsZip(t *testing.T) {
 	ok := true
 	failed := false
 	status := http.StatusServiceUnavailable
+	expectedBytes := int64(10485760)
+	downloadedBytes := int64(10485760)
 	writeTestJSONL(t, dataDir, old, []model.Sample{
 		{Timestamp: old, Type: "download", Name: "r2_1mb", OK: &ok, Mbps: floatPtr(9)},
 	})
 	writeTestJSONL(t, dataDir, now, []model.Sample{
 		{Timestamp: now.Add(-1 * time.Hour), Type: "ping", Name: "gateway", OK: &ok, LossPercent: floatPtr(0), RTTAvgMs: floatPtr(1)},
 		{Timestamp: now.Add(-30 * time.Minute), Type: "http", Group: "github", Category: "dev", Name: "github_home", OK: &failed, HTTPStatus: &status, TotalMs: floatPtr(1200)},
+		{Timestamp: now.Add(-15 * time.Minute), Type: "speedprobe", Source: "scum_speedprobe", Name: "r2_10mb", Label: "R2 10MB", OK: &ok, ExpectedBytes: &expectedBytes, DownloadedBytes: &downloadedBytes, DurationMs: floatPtr(1000), Mbps: floatPtr(80), Status: "ok", RunID: "run-1"},
 	})
 	targets := []config.TargetConfig{
 		{Name: "gateway", Label: "Gateway", Type: "ping", Target: "192.168.1.1"},
 		{Name: "github_home", Label: "GitHub Home", Type: "http", Group: "github", Category: "dev", URL: "https://github.com/"},
 	}
-	handler := New(collector.NewState(), "test-version", targets).WithExportStorage("", dataDir, "samples-%Y-%m-%d.jsonl").Routes()
+	remoteSpeedProbes := []config.RemoteSpeedProbeConfig{
+		{Name: "scum_speedprobe", Label: "Scum Speedprobe", DisplayOrder: 30, URL: "http://scum:8090/api/v1/speed/latest", IntervalSeconds: 300, TimeoutSeconds: 10, Enabled: true},
+	}
+	handler := New(collector.NewState(), "test-version", targets).WithRemoteSpeedProbes(remoteSpeedProbes).WithExportStorage("", dataDir, "samples-%Y-%m-%d.jsonl").Routes()
 
 	req := httptest.NewRequest(http.MethodGet, "/api/export/ai?range=1d", nil)
 	rec := httptest.NewRecorder()
@@ -196,17 +202,24 @@ func TestAIExportReturnsZip(t *testing.T) {
 	if err := json.Unmarshal(files["manifest.json"], &manifest); err != nil {
 		t.Fatalf("Unmarshal(manifest) error = %v", err)
 	}
-	if manifest.Format != aiExportFormat || manifest.SampleCount != 2 || manifest.NetwatchVersion != "test-version" {
+	if manifest.Format != aiExportFormat || manifest.SampleCount != 3 || manifest.NetwatchVersion != "test-version" {
 		t.Fatalf("manifest = %+v, want export metadata", manifest)
 	}
-	if strings.Contains(string(files["samples.jsonl"]), "r2_1mb") || !strings.Contains(string(files["samples.jsonl"]), `"kind":"ping"`) || !strings.Contains(string(files["samples.jsonl"]), `"kind":"http"`) {
-		t.Fatalf("samples.jsonl = %s, want only in-range ping/http samples with kind", string(files["samples.jsonl"]))
+	var exportTargets aiExportTargets
+	if err := json.Unmarshal(files["targets.json"], &exportTargets); err != nil {
+		t.Fatalf("Unmarshal(targets) error = %v", err)
+	}
+	if len(exportTargets.RemoteSpeedProbes) != 1 || exportTargets.RemoteSpeedProbes[0].Name != "scum_speedprobe" {
+		t.Fatalf("targets = %+v, want remote speedprobe target metadata", exportTargets)
+	}
+	if strings.Contains(string(files["samples.jsonl"]), "r2_1mb") || !strings.Contains(string(files["samples.jsonl"]), `"kind":"ping"`) || !strings.Contains(string(files["samples.jsonl"]), `"kind":"http"`) || !strings.Contains(string(files["samples.jsonl"]), `"kind":"speedprobe"`) {
+		t.Fatalf("samples.jsonl = %s, want only in-range ping/http/speedprobe samples with kind", string(files["samples.jsonl"]))
 	}
 	var summary aiExportSummary
 	if err := json.Unmarshal(files["summary.json"], &summary); err != nil {
 		t.Fatalf("Unmarshal(summary) error = %v", err)
 	}
-	if summary.Counts.Samples != 2 || summary.Counts.Ping != 1 || summary.Counts.HTTP != 1 || summary.Issues.ServiceHealth != 1 {
+	if summary.Counts.Samples != 3 || summary.Counts.Ping != 1 || summary.Counts.HTTP != 1 || summary.Counts.Speedprobe != 1 || summary.Issues.ServiceHealth != 1 || summary.Overall.SpeedprobeWorstLevel != "ok" {
 		t.Fatalf("summary = %+v, want filtered sample counts and service issue", summary)
 	}
 }
@@ -436,6 +449,79 @@ func TestDownloadSeriesWithBucketReturnsChart(t *testing.T) {
 	}
 }
 
+func TestSpeedprobeLatestAndSeries(t *testing.T) {
+	handler := newSpeedprobeTestHandler()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/speedprobe/latest", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var latest struct {
+		Samples []model.Sample `json:"samples"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &latest); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	latestSpeedprobe := sampleByName(latest.Samples, "r2_10mb")
+	if len(latest.Samples) != 2 || latestSpeedprobe == nil || latestSpeedprobe.Source != "scum_speedprobe" || latestSpeedprobe.DisplayName != "R2 10MB" || latestSpeedprobe.DisplayOrder != 30 {
+		t.Fatalf("latest = %+v, want speedprobe samples with source metadata", latest.Samples)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/speedprobe/series?source=scum_speedprobe&name=r2_10mb&range=24h", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var series struct {
+		Source  string         `json:"source"`
+		Name    string         `json:"name"`
+		Range   string         `json:"range"`
+		Samples []model.Sample `json:"samples"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &series); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if series.Source != "scum_speedprobe" || series.Name != "r2_10mb" || series.Range != "24h" || len(series.Samples) != 2 {
+		t.Fatalf("series = %+v, want speedprobe series by source/name", series)
+	}
+}
+
+func TestSpeedprobeSeriesWithBucketReturnsChart(t *testing.T) {
+	handler := newSpeedprobeTestHandler()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/speedprobe/series?source=scum_speedprobe&name=r2_10mb&range=24h&bucket=5m", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var body chartResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if body.Type != "speedprobe" || body.Source != "scum_speedprobe" || body.Name != "r2_10mb" || body.DisplayName != "R2 10MB" || len(body.Points) != 1 || body.Points[0].AvgMbps == nil || *body.Points[0].AvgMbps != 70 {
+		t.Fatalf("body = %+v, want speedprobe chart response", body)
+	}
+}
+
+func TestSpeedprobeRequiresSourceAndName(t *testing.T) {
+	handler := newSpeedprobeTestHandler()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/speedprobe/series?name=r2_10mb", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
 func TestServicesSeriesWithBucketReturnsChart(t *testing.T) {
 	handler := newTestHandler()
 
@@ -563,6 +649,87 @@ func TestChartsOverview(t *testing.T) {
 	}
 }
 
+func TestChartsCatalogIncludesSpeedprobe(t *testing.T) {
+	handler := newSpeedprobeTestHandler()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/charts/catalog", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var body struct {
+		Speedprobe []catalogTarget `json:"speedprobe"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	target := catalogTargetByName(body.Speedprobe, "r2_10mb")
+	if len(body.Speedprobe) != 2 || target == nil || target.Source != "scum_speedprobe" || target.DisplayName != "R2 10MB" || target.DisplayOrder != 30 {
+		t.Fatalf("speedprobe catalog = %+v, want source/name metadata", body.Speedprobe)
+	}
+}
+
+func TestChartsOverviewIncludesRepresentativeSpeedprobe(t *testing.T) {
+	handler := newSpeedprobeTestHandler()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/charts/overview?range=24h&bucket=5m&max_points=10", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var body chartsOverviewResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if len(body.Speedprobe) != 1 || body.Speedprobe[0].Source != "scum_speedprobe" || body.Speedprobe[0].Name != "r2_10mb" || len(body.Speedprobe[0].Points) != 1 {
+		t.Fatalf("speedprobe overview = %+v, want representative chart", body.Speedprobe)
+	}
+}
+
+func TestSummaryAndCompactIncludeSpeedprobeWithoutAffectingNetworkStatus(t *testing.T) {
+	handler := newSpeedprobeTestHandler()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/summary", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var summary struct {
+		NetworkStatus monitoringSummaryResponse `json:"network_status"`
+		Speedprobe    speedprobeSummaryResponse `json:"speedprobe"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &summary); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if summary.NetworkStatus.Level != "ok" || summary.NetworkStatus.Alert || summary.Speedprobe.Sources != 1 || summary.Speedprobe.Probes != 2 {
+		t.Fatalf("summary = %+v, want speedprobe summary and ok network", summary)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/monitoring/compact", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var compact struct {
+		NetworkStatus    monitoringSummaryResponse `json:"network_status"`
+		ThroughputStatus throughputStatusResponse  `json:"throughput_status"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &compact); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if compact.NetworkStatus.Level != "ok" || compact.NetworkStatus.Alert || compact.ThroughputStatus.Level != "warning" || compact.ThroughputStatus.IssueCount != 1 || len(compact.ThroughputStatus.Sources) != 1 {
+		t.Fatalf("compact = %+v, want throughput warning isolated from network status", compact)
+	}
+}
+
 func TestMonitoringThresholds(t *testing.T) {
 	state := collector.NewState()
 	thresholds := config.DefaultMonitoringThresholds()
@@ -613,6 +780,9 @@ func TestCapabilities(t *testing.T) {
 	}
 	if body.Service != "netwatch" || body.APIVersion != apiVersion || !body.Features["download"] || !body.Features["download_series"] || !body.Features["charts_download"] || len(body.Chart.Ranges) == 0 || body.Chart.MaxPoints["default"] != defaultMaxPoints {
 		t.Fatalf("capabilities = %+v, want service/api/chart support", body)
+	}
+	if !body.Features["speedprobe"] || !body.Features["speedprobe_series"] {
+		t.Fatalf("features = %+v, want speedprobe support", body.Features)
 	}
 }
 
@@ -833,6 +1003,28 @@ func newTestHandler() http.Handler {
 	return New(state, "test", targets).WithDownloadProbes(downloadProbes).WithStatusPages(statusPages).Routes()
 }
 
+func newSpeedprobeTestHandler() http.Handler {
+	state := collector.NewState()
+	ok := true
+	failed := false
+	now := time.Now().Add(-time.Hour).Truncate(time.Hour).Add(32 * time.Minute)
+	expectedBytes := int64(10485760)
+	downloadedBytes := int64(10485760)
+	state.Load([]model.Sample{
+		{Timestamp: now, Type: "ping", Name: "cloudflare_dns", OK: &ok, LossPercent: floatPtr(0), RTTAvgMs: floatPtr(10)},
+		{Timestamp: now.Add(-time.Minute), Type: "speedprobe", Kind: "speedprobe", Source: "scum_speedprobe", SourceLabel: "Scum Speedprobe", Name: "r2_10mb", Label: "R2 10MB", URL: "https://example.com/10mb.bin", OK: &ok, ExpectedBytes: &expectedBytes, DownloadedBytes: &downloadedBytes, DurationMs: floatPtr(1200), Mbps: floatPtr(60), Status: "ok", RunID: "run-1"},
+		{Timestamp: now, Type: "speedprobe", Kind: "speedprobe", Source: "scum_speedprobe", SourceLabel: "Scum Speedprobe", Name: "r2_10mb", Label: "R2 10MB", URL: "https://example.com/10mb.bin", OK: &ok, ExpectedBytes: &expectedBytes, DownloadedBytes: &downloadedBytes, DurationMs: floatPtr(1000), Mbps: floatPtr(80), Status: "ok", RunID: "run-2"},
+		{Timestamp: now, Type: "speedprobe", Kind: "speedprobe", Source: "scum_speedprobe", SourceLabel: "Scum Speedprobe", Name: "r2_100mb", Label: "R2 100MB", URL: "https://example.com/100mb.bin", OK: &failed, Error: "timeout", Status: "error", RunID: "run-3"},
+	})
+	targets := []config.TargetConfig{
+		{Name: "cloudflare_dns", Type: "ping", Target: "1.1.1.1"},
+	}
+	remoteSpeedProbes := []config.RemoteSpeedProbeConfig{
+		{Name: "scum_speedprobe", Label: "Scum Speedprobe", DisplayOrder: 30, URL: "http://scum:8090/api/v1/speed/latest", IntervalSeconds: 300, TimeoutSeconds: 10, Enabled: true},
+	}
+	return New(state, "test", targets).WithRemoteSpeedProbes(remoteSpeedProbes).Routes()
+}
+
 func assertSampleCount(t *testing.T, rec *httptest.ResponseRecorder, want int) {
 	t.Helper()
 	if rec.Code != http.StatusOK {
@@ -898,6 +1090,24 @@ func sortedMapKeys(values map[string][]byte) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+func sampleByName(samples []model.Sample, name string) *model.Sample {
+	for i := range samples {
+		if samples[i].Name == name {
+			return &samples[i]
+		}
+	}
+	return nil
+}
+
+func catalogTargetByName(targets []catalogTarget, name string) *catalogTarget {
+	for i := range targets {
+		if targets[i].Name == name {
+			return &targets[i]
+		}
+	}
+	return nil
 }
 
 func floatPtr(value float64) *float64 {

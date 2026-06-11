@@ -7,6 +7,9 @@ type Sample struct {
 	Kind         string    `json:"kind,omitempty"`
 	Type         string    `json:"type"`
 	Name         string    `json:"name"`
+	Label        string    `json:"label,omitempty"`
+	Source       string    `json:"source,omitempty"`
+	SourceLabel  string    `json:"source_label,omitempty"`
 	Group        string    `json:"group,omitempty"`
 	Category     string    `json:"category,omitempty"`
 	DisplayName  string    `json:"display_name,omitempty"`
@@ -44,6 +47,14 @@ type Sample struct {
 	BytesPerSec     *float64 `json:"bytes_per_sec,omitempty"`
 	Mbps            *float64 `json:"mbps,omitempty"`
 
+	Observer    *SpeedprobeObserver `json:"observer,omitempty"`
+	Status      string              `json:"status,omitempty"`
+	Running     *bool               `json:"running,omitempty"`
+	ManualOnly  *bool               `json:"manual_only,omitempty"`
+	Enabled     *bool               `json:"enabled,omitempty"`
+	RunID       string              `json:"run_id,omitempty"`
+	CollectedAt *time.Time          `json:"collected_at,omitempty"`
+
 	RetryState           string     `json:"retry_state,omitempty"`
 	RetryAttempt         *int       `json:"retry_attempt,omitempty"`
 	RecoverySuccessCount *int       `json:"recovery_success_count,omitempty"`
@@ -56,6 +67,14 @@ type Sample struct {
 	Components            []StatusPageComponent      `json:"components,omitempty"`
 	Incidents             []StatusPageIncident       `json:"incidents,omitempty"`
 	ScheduledMaintenances []StatusPageScheduledMaint `json:"scheduled_maintenances,omitempty"`
+}
+
+type SpeedprobeObserver struct {
+	Hostname  string `json:"hostname,omitempty"`
+	Interface string `json:"interface,omitempty"`
+	LinkSpeed string `json:"link_speed,omitempty"`
+	Duplex    string `json:"duplex,omitempty"`
+	Operstate string `json:"operstate,omitempty"`
 }
 
 type StatusPageComponent struct {

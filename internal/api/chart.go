@@ -50,6 +50,7 @@ type chartResponse struct {
 
 	Type         string       `json:"type"`
 	Name         string       `json:"name,omitempty"`
+	Source       string       `json:"source,omitempty"`
 	DisplayName  string       `json:"display_name,omitempty"`
 	Target       string       `json:"target,omitempty"`
 	Hostname     string       `json:"hostname,omitempty"`
@@ -139,6 +140,13 @@ func buildChartResponse(sampleType, rangeValue, bucketValue string, bucket time.
 		response.DisplayOrder = samples[0].DisplayOrder
 		response.URL = samples[0].URL
 		response.Points = aggregateDownload(samples, bucket)
+	case "speedprobe":
+		response.Name = samples[0].Name
+		response.Source = samples[0].Source
+		response.DisplayName = samples[0].DisplayName
+		response.DisplayOrder = samples[0].DisplayOrder
+		response.URL = samples[0].URL
+		response.Points = aggregateSpeedprobe(samples, bucket)
 	}
 	response.Points = thinPoints(response.Points, maxPoints)
 	return response
@@ -289,6 +297,14 @@ func aggregateServices(samples []model.Sample, bucket time.Duration) []chartPoin
 }
 
 func aggregateDownload(samples []model.Sample, bucket time.Duration) []chartPoint {
+	return aggregateThroughput(samples, bucket)
+}
+
+func aggregateSpeedprobe(samples []model.Sample, bucket time.Duration) []chartPoint {
+	return aggregateThroughput(samples, bucket)
+}
+
+func aggregateThroughput(samples []model.Sample, bucket time.Duration) []chartPoint {
 	buckets := newBuckets(samples, bucket)
 	for _, sample := range samples {
 		agg := buckets[bucketStart(sample.Timestamp, bucket)]

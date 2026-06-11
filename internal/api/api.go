@@ -16,13 +16,14 @@ import (
 const apiVersion = "0.4"
 
 type Handler struct {
-	state          *collector.State
-	version        string
-	targets        []config.TargetConfig
-	downloadProbes []config.DownloadProbeConfig
-	statusPages    []config.StatusPageConfig
-	thresholds     config.MonitoringThresholds
-	exportStorage  exportStorageConfig
+	state             *collector.State
+	version           string
+	targets           []config.TargetConfig
+	downloadProbes    []config.DownloadProbeConfig
+	remoteSpeedProbes []config.RemoteSpeedProbeConfig
+	statusPages       []config.StatusPageConfig
+	thresholds        config.MonitoringThresholds
+	exportStorage     exportStorageConfig
 }
 
 func New(state *collector.State, version string, targets ...[]config.TargetConfig) *Handler {
@@ -45,6 +46,11 @@ func (h *Handler) WithDownloadProbes(downloadProbes []config.DownloadProbeConfig
 
 func (h *Handler) WithStatusPages(statusPages []config.StatusPageConfig) *Handler {
 	h.statusPages = statusPages
+	return h
+}
+
+func (h *Handler) WithRemoteSpeedProbes(remoteSpeedProbes []config.RemoteSpeedProbeConfig) *Handler {
+	h.remoteSpeedProbes = remoteSpeedProbes
 	return h
 }
 
@@ -74,6 +80,8 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /api/http/series", h.httpSeries)
 	mux.HandleFunc("GET /api/download/latest", h.downloadLatest)
 	mux.HandleFunc("GET /api/download/series", h.downloadSeries)
+	mux.HandleFunc("GET /api/speedprobe/latest", h.speedprobeLatest)
+	mux.HandleFunc("GET /api/speedprobe/series", h.speedprobeSeries)
 	mux.HandleFunc("GET /api/status-pages/latest", h.statusPagesLatest)
 	mux.HandleFunc("GET /api/export/ai", h.aiExport)
 	mux.HandleFunc("GET /api/summary", h.summary)
@@ -110,6 +118,8 @@ func (h *Handler) capabilities(w http.ResponseWriter, r *http.Request) {
 			"http":                            true,
 			"download":                        true,
 			"download_series":                 true,
+			"speedprobe":                      true,
+			"speedprobe_series":               true,
 			"summary":                         true,
 			"status_pages":                    true,
 			"ai_export":                       true,
@@ -136,6 +146,7 @@ func (h *Handler) latest(w http.ResponseWriter, r *http.Request) {
 		"dns":          h.latestByType("dns"),
 		"http":         h.latestByType("http"),
 		"download":     h.latestByType("download"),
+		"speedprobe":   h.latestByType("speedprobe"),
 		"status_pages": h.latestByType("status_page"),
 	})
 }
@@ -180,6 +191,62 @@ func (h *Handler) downloadSeries(w http.ResponseWriter, r *http.Request) {
 	h.series(w, r, "download")
 }
 
+func (h *Handler) speedprobeLatest(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"samples": h.latestByType("speedprobe"),
+	})
+}
+
+func (h *Handler) speedprobeSeries(w http.ResponseWriter, r *http.Request) {
+	source := strings.TrimSpace(r.URL.Query().Get("source"))
+	name := strings.TrimSpace(r.URL.Query().Get("name"))
+	if source == "" || name == "" {
+		writeError(w, http.StatusBadRequest, "source and name are required")
+		return
+	}
+	rangeValue := r.URL.Query().Get("range")
+	if rangeValue == "" {
+		rangeValue = "24h"
+	}
+	duration, err := parseRange(rangeValue)
+	if err != nil {
+		if r.URL.Query().Get("bucket") != "" {
+			writeStructuredError(w, http.StatusBadRequest, "invalid_range", err.Error(), "range", nil)
+			return
+		}
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	bucketValue := r.URL.Query().Get("bucket")
+	if bucketValue != "" {
+		bucket, err := parseBucket(bucketValue)
+		if err != nil {
+			writeStructuredError(w, http.StatusBadRequest, "invalid_bucket", err.Error(), "bucket", nil)
+			return
+		}
+		maxPoints, err := parseMaxPoints(r.URL.Query().Get("max_points"))
+		if err != nil {
+			writeStructuredError(w, http.StatusBadRequest, "invalid_max_points", err.Error(), "max_points", maxPointsMeta())
+			return
+		}
+		end := time.Now()
+		start := end.Add(-duration)
+		samples := h.speedprobeSeriesSamples(source, name, start)
+		if len(samples) == 0 {
+			writeStructuredError(w, http.StatusNotFound, "target_not_found", "chart series not found", "name", nil)
+			return
+		}
+		writeJSON(w, http.StatusOK, buildChartResponse("speedprobe", rangeValue, bucketValue, bucket, maxPoints, start, end, samples))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"source":  source,
+		"name":    name,
+		"range":   rangeValue,
+		"samples": h.speedprobeSeriesSamples(source, name, time.Now().Add(-duration)),
+	})
+}
+
 func (h *Handler) statusPagesLatest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, statusPagesLatestResponse(h.latestStatusPages(), time.Now()))
 }
@@ -191,6 +258,7 @@ func (h *Handler) summary(w http.ResponseWriter, r *http.Request) {
 		"generated_at":    generatedAt,
 		"network_status":  monitoringSummary(status),
 		"service_health":  serviceHealthSummary(h.latestServices(), h.thresholds),
+		"speedprobe":      speedprobeSummary(h.latestSpeedprobes()),
 		"provider_status": providerStatusSummary(h.latestStatusPages()),
 	})
 }
@@ -375,7 +443,7 @@ func (h *Handler) monitoringCompact(w http.ResponseWriter, r *http.Request) {
 	start := end.Add(-duration)
 	status := buildMonitoringStatus(h.applyDisplayMetadata(h.state.LatestAll()), h.thresholds, generatedAt)
 	history := buildMonitoringStatusHistory(h.applyDisplayMetadata(h.state.SamplesSince(start)), h.thresholds, "2h", "5m", duration, bucket, start, end, generatedAt)
-	writeJSON(w, http.StatusOK, buildMonitoringCompact(status, history, generatedAt, h.thresholds, h.latestServices(), h.latestStatusPages()))
+	writeJSON(w, http.StatusOK, buildMonitoringCompact(status, history, generatedAt, h.thresholds, h.latestServices(), h.latestSpeedprobes(), h.latestStatusPages()))
 }
 
 func (h *Handler) latestByType(sampleType string) []model.Sample {
@@ -394,6 +462,14 @@ func (h *Handler) latestStatusPages() []model.Sample {
 	return h.applyDisplayMetadata(h.state.LatestByType("status_page"))
 }
 
+func (h *Handler) latestSpeedprobes() []model.Sample {
+	return h.applyDisplayMetadata(h.state.LatestByType("speedprobe"))
+}
+
+func (h *Handler) speedprobeSeriesSamples(source, name string, since time.Time) []model.Sample {
+	return h.applyDisplayMetadata(h.state.SeriesByTypeSource("speedprobe", source, name, since))
+}
+
 func (h *Handler) serviceSeries(group, name string, since time.Time) []model.Sample {
 	return h.applyDisplayMetadata(h.state.ServiceSeries(group, name, since))
 }
@@ -404,12 +480,23 @@ func (h *Handler) applyDisplayMetadata(samples []model.Sample) []model.Sample {
 		if ordered[i].DisplayOrder > 0 {
 			ordered[i].DisplayName = h.displayNameFor(ordered[i])
 		} else {
-			ordered[i].DisplayOrder = h.displayOrderFor(ordered[i].Name)
+			ordered[i].DisplayOrder = h.displayOrderForSample(ordered[i])
 			ordered[i].DisplayName = h.displayNameFor(ordered[i])
 		}
 	}
 	sortSamplesForDisplay(ordered)
 	return ordered
+}
+
+func (h *Handler) displayOrderForSample(sample model.Sample) int {
+	if sample.Type == "speedprobe" {
+		for _, remoteSpeedProbe := range h.remoteSpeedProbes {
+			if remoteSpeedProbe.Name == sample.Source {
+				return remoteSpeedProbe.DisplayOrder
+			}
+		}
+	}
+	return h.displayOrderFor(sample.Name)
 }
 
 func (h *Handler) displayOrderFor(name string) int {
@@ -421,6 +508,11 @@ func (h *Handler) displayOrderFor(name string) int {
 	for _, probe := range h.downloadProbes {
 		if probe.Name == name {
 			return probe.DisplayOrder
+		}
+	}
+	for _, remoteSpeedProbe := range h.remoteSpeedProbes {
+		if remoteSpeedProbe.Name == name {
+			return remoteSpeedProbe.DisplayOrder
 		}
 	}
 	for _, statusPage := range h.statusPages {
@@ -446,6 +538,17 @@ func (h *Handler) displayNameFor(sample model.Sample) string {
 				return probe.Label
 			}
 			return labelForName(probe.Name)
+		}
+	}
+	for _, remoteSpeedProbe := range h.remoteSpeedProbes {
+		if remoteSpeedProbe.Name == sample.Source {
+			if strings.TrimSpace(sample.DisplayName) != "" {
+				return sample.DisplayName
+			}
+			if strings.TrimSpace(sample.Label) != "" {
+				return sample.Label
+			}
+			return labelForName(sample.Name)
 		}
 	}
 	for _, statusPage := range h.statusPages {

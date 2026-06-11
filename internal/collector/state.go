@@ -30,7 +30,7 @@ func (s *State) Load(samples []model.Sample) {
 		return s.series[i].Timestamp.Before(s.series[j].Timestamp)
 	})
 	for _, sample := range s.series {
-		s.latest[sample.Name] = sample
+		s.latest[latestKey(sample)] = sample
 	}
 }
 
@@ -39,7 +39,7 @@ func (s *State) Add(sample model.Sample) {
 	defer s.mu.Unlock()
 
 	s.series = append(s.series, sample)
-	s.latest[sample.Name] = sample
+	s.latest[latestKey(sample)] = sample
 }
 
 func (s *State) LatestAll() []model.Sample {
@@ -94,6 +94,22 @@ func (s *State) SeriesByType(sampleType, name string, since time.Time) []model.S
 		if sample.Type == sampleType && sample.Name == name && !sample.Timestamp.Before(since) {
 			samples = append(samples, sample)
 		}
+	}
+	sortSamples(samples)
+
+	return samples
+}
+
+func (s *State) SeriesByTypeSource(sampleType, source, name string, since time.Time) []model.Sample {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var samples []model.Sample
+	for _, sample := range s.series {
+		if sample.Type != sampleType || sample.Source != source || sample.Name != name || sample.Timestamp.Before(since) {
+			continue
+		}
+		samples = append(samples, sample)
 	}
 	sortSamples(samples)
 
@@ -166,6 +182,13 @@ func sortSamples(samples []model.Sample) {
 		}
 		return samples[i].Name < samples[j].Name
 	})
+}
+
+func latestKey(sample model.Sample) string {
+	if sample.Source != "" {
+		return sample.Type + ":" + sample.Source + ":" + sample.Name
+	}
+	return sample.Type + ":" + sample.Name
 }
 
 func displayOrderRank(value int) int {

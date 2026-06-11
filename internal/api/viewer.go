@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/youhey/netwatch/internal/config"
+	"github.com/youhey/netwatch/internal/model"
 )
 
 var (
@@ -17,6 +18,7 @@ var (
 
 type catalogTarget struct {
 	Name          string `json:"name"`
+	Source        string `json:"source,omitempty"`
 	DisplayName   string `json:"display_name"`
 	Target        string `json:"target,omitempty"`
 	Hostname      string `json:"hostname,omitempty"`
@@ -60,6 +62,7 @@ type chartsOverviewResponse struct {
 	Ping             []chartResponse `json:"ping"`
 	HTTP             []chartResponse `json:"http"`
 	Download         []chartResponse `json:"download"`
+	Speedprobe       []chartResponse `json:"speedprobe"`
 	ServiceGroups    []chartResponse `json:"service_groups"`
 }
 
@@ -68,6 +71,7 @@ func (h *Handler) chartsCatalog(w http.ResponseWriter, r *http.Request) {
 	dnsTargets := make([]catalogTarget, 0)
 	httpTargets := make([]catalogTarget, 0)
 	downloadTargets := make([]catalogTarget, 0, len(h.downloadProbes))
+	speedprobeTargets := make([]catalogTarget, 0)
 	groups := make(map[string]catalogServiceGroup)
 
 	for _, target := range h.targets {
@@ -133,6 +137,23 @@ func (h *Handler) chartsCatalog(w http.ResponseWriter, r *http.Request) {
 			Label:         displayName,
 		})
 	}
+	for _, sample := range h.latestSpeedprobes() {
+		displayName := sample.DisplayName
+		if displayName == "" {
+			displayName = sample.Label
+		}
+		if displayName == "" {
+			displayName = labelForName(sample.Name)
+		}
+		speedprobeTargets = append(speedprobeTargets, catalogTarget{
+			Name:         sample.Name,
+			Source:       sample.Source,
+			DisplayName:  displayName,
+			URL:          sample.URL,
+			DisplayOrder: sample.DisplayOrder,
+			Label:        displayName,
+		})
+	}
 
 	serviceGroups := make([]catalogServiceGroup, 0, len(groups))
 	for _, group := range groups {
@@ -142,6 +163,7 @@ func (h *Handler) chartsCatalog(w http.ResponseWriter, r *http.Request) {
 	sortCatalogTargets(dnsTargets)
 	sortCatalogTargets(httpTargets)
 	sortCatalogTargets(downloadTargets)
+	sortCatalogTargets(speedprobeTargets)
 	sort.SliceStable(serviceGroups, func(i, j int) bool {
 		leftOrder := displayOrderRank(serviceGroups[i].DisplayOrder)
 		rightOrder := displayOrderRank(serviceGroups[j].DisplayOrder)
@@ -160,6 +182,7 @@ func (h *Handler) chartsCatalog(w http.ResponseWriter, r *http.Request) {
 		"dns":            dnsTargets,
 		"http":           httpTargets,
 		"download":       downloadTargets,
+		"speedprobe":     speedprobeTargets,
 		"service_groups": serviceGroups,
 	})
 }
@@ -226,6 +249,13 @@ func (h *Handler) chartsOverview(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		response.Download = append(response.Download, buildChartResponse("download", rangeValue, bucketValue, bucket, maxPoints, start, end, samples))
+	}
+	for _, sample := range representativeSpeedprobeSamples(h.latestSpeedprobes()) {
+		samples := h.speedprobeSeriesSamples(sample.Source, sample.Name, start)
+		if len(samples) == 0 {
+			continue
+		}
+		response.Speedprobe = append(response.Speedprobe, buildChartResponse("speedprobe", rangeValue, bucketValue, bucket, maxPoints, start, end, samples))
 	}
 	for _, group := range []string{"youtube", "steam", "pcgame", "psn", "aws", "azure"} {
 		samples := filterIgnoredServiceTargets(h.serviceSeries(group, "", start))
@@ -295,8 +325,37 @@ func sortCatalogTargets(targets []catalogTarget) {
 		if leftOrder != rightOrder {
 			return leftOrder < rightOrder
 		}
+		if targets[i].Source != targets[j].Source {
+			return targets[i].Source < targets[j].Source
+		}
 		return targets[i].Name < targets[j].Name
 	})
+}
+
+func representativeSpeedprobeSamples(samples []model.Sample) []model.Sample {
+	seenSources := make(map[string]struct{})
+	representatives := make([]model.Sample, 0)
+	representatives = appendSpeedprobeRepresentatives(representatives, seenSources, samples, "10mb")
+	representatives = appendSpeedprobeRepresentatives(representatives, seenSources, samples, "100mb")
+	representatives = appendSpeedprobeRepresentatives(representatives, seenSources, samples, "")
+	return representatives
+}
+
+func appendSpeedprobeRepresentatives(representatives []model.Sample, seenSources map[string]struct{}, samples []model.Sample, nameFragment string) []model.Sample {
+	for _, sample := range samples {
+		if sample.Source == "" {
+			continue
+		}
+		if _, ok := seenSources[sample.Source]; ok {
+			continue
+		}
+		if nameFragment != "" && !strings.Contains(strings.ToLower(sample.Name), nameFragment) {
+			continue
+		}
+		representatives = append(representatives, sample)
+		seenSources[sample.Source] = struct{}{}
+	}
+	return representatives
 }
 
 func orderedTargetsByType(targets []config.TargetConfig, targetType string) []config.TargetConfig {

@@ -8,6 +8,7 @@ import (
 	"github.com/youhey/netwatch/internal/config"
 	"github.com/youhey/netwatch/internal/model"
 	"github.com/youhey/netwatch/internal/probe"
+	"github.com/youhey/netwatch/internal/speedprobe"
 )
 
 type fakeHTTPProbe struct {
@@ -22,6 +23,13 @@ type fakeDownloadProbe struct {
 type fakeStatusPageProbe struct {
 	deadline            time.Time
 	importantComponents []string
+}
+
+type fakeSpeedprobeClient struct {
+	deadline time.Time
+	timeout  time.Duration
+	latest   speedprobe.LatestResponse
+	err      error
 }
 
 type fakeStorage struct {
@@ -69,6 +77,18 @@ func (p *fakeStatusPageProbe) Get(ctx context.Context, url string, importantComp
 		Description: "All Systems Operational",
 		DurationMs:  123,
 	}, nil
+}
+
+func (c *fakeSpeedprobeClient) Latest(ctx context.Context, url string, timeout time.Duration) (speedprobe.LatestResponse, error) {
+	deadline, ok := ctx.Deadline()
+	if ok {
+		c.deadline = deadline
+	}
+	c.timeout = timeout
+	if c.err != nil {
+		return speedprobe.LatestResponse{}, c.err
+	}
+	return c.latest, nil
 }
 
 func (s *fakeStorage) Append(sample model.Sample) error {
@@ -175,6 +195,110 @@ func TestMeasureStatusPageUsesMetadataAndTimeout(t *testing.T) {
 	}
 	if statusPageProbe.deadline.Before(before.Add(2*time.Second)) || remaining > 3*time.Second {
 		t.Fatalf("deadline remaining = %v, want HTTP timeout around 3s", remaining)
+	}
+}
+
+func TestCollectRemoteSpeedProbeStoresCompletedSamplesAndDedupes(t *testing.T) {
+	measuredAt := time.Date(2026, 6, 12, 0, 0, 0, 0, time.UTC)
+	speedprobeClient := &fakeSpeedprobeClient{
+		latest: speedprobe.LatestResponse{
+			Observer: speedprobe.Observer{
+				Hostname:  "scum",
+				Interface: "eth0",
+				LinkSpeed: "1000Mb/s",
+				Duplex:    "full",
+				Operstate: "up",
+			},
+			Probes: []speedprobe.Probe{
+				{
+					Name:            "r2_10mb",
+					Label:           "R2 10MB",
+					Status:          "ok",
+					Enabled:         true,
+					URL:             "https://example.com/10mb.bin",
+					ExpectedBytes:   int64Ptr(10485760),
+					DownloadedBytes: int64Ptr(10485760),
+					DurationMs:      floatPtr(1200),
+					Mbps:            floatPtr(69.9),
+					MeasuredAt:      &measuredAt,
+					LastRunID:       "run-1",
+				},
+				{
+					Name:       "r2_100mb",
+					Status:     "running",
+					Running:    true,
+					MeasuredAt: &measuredAt,
+				},
+			},
+		},
+	}
+	storage := &fakeStorage{}
+	state := NewState()
+	collector := New(config.Default(), nil, nil, nil, nil, storage, state).WithSpeedprobe(speedprobeClient)
+	target := config.RemoteSpeedProbeConfig{
+		Name:            "scum_speedprobe",
+		Label:           "Scum Speedprobe",
+		URL:             "http://scum:8090/api/v1/speed/latest",
+		IntervalSeconds: 300,
+		TimeoutSeconds:  3,
+		Enabled:         true,
+		DisplayOrder:    30,
+	}
+
+	collector.collectRemoteSpeedProbe(context.Background(), target)
+	collector.collectRemoteSpeedProbe(context.Background(), target)
+
+	if len(storage.samples) != 1 {
+		t.Fatalf("len(samples) = %d, want 1 completed deduped sample", len(storage.samples))
+	}
+	sample := storage.samples[0]
+	if sample.Type != "speedprobe" || sample.Kind != "speedprobe" || sample.Source != "scum_speedprobe" || sample.SourceLabel != "Scum Speedprobe" || sample.Name != "r2_10mb" || sample.DisplayName != "R2 10MB" || sample.DisplayOrder != 30 || sample.RunID != "run-1" {
+		t.Fatalf("sample = %+v, want speedprobe metadata", sample)
+	}
+	if sample.Observer == nil || sample.Observer.Hostname != "scum" || sample.Mbps == nil || *sample.Mbps != 69.9 || sample.ExpectedBytes == nil || *sample.ExpectedBytes != 10485760 || sample.OK == nil || !*sample.OK {
+		t.Fatalf("sample = %+v, want speedprobe metrics", sample)
+	}
+	if got := state.LatestByType("speedprobe"); len(got) != 1 || got[0].Source != "scum_speedprobe" {
+		t.Fatalf("LatestByType(speedprobe) = %+v, want stored source sample", got)
+	}
+	if speedprobeClient.timeout != 3*time.Second {
+		t.Fatalf("timeout = %v, want 3s", speedprobeClient.timeout)
+	}
+}
+
+func TestCollectRemoteSpeedProbeDedupesLoadedLatestState(t *testing.T) {
+	measuredAt := time.Date(2026, 6, 12, 0, 0, 0, 0, time.UTC)
+	speedprobeClient := &fakeSpeedprobeClient{
+		latest: speedprobe.LatestResponse{
+			Probes: []speedprobe.Probe{
+				{
+					Name:       "r2_10mb",
+					Label:      "R2 10MB",
+					Status:     "ok",
+					Enabled:    true,
+					MeasuredAt: &measuredAt,
+					LastRunID:  "run-1",
+				},
+			},
+		},
+	}
+	state := NewState()
+	state.Load([]model.Sample{
+		{Timestamp: measuredAt, Type: "speedprobe", Kind: "speedprobe", Source: "scum_speedprobe", Name: "r2_10mb", RunID: "run-1"},
+	})
+	storage := &fakeStorage{}
+	collector := New(config.Default(), nil, nil, nil, nil, storage, state).WithSpeedprobe(speedprobeClient)
+
+	collector.collectRemoteSpeedProbe(context.Background(), config.RemoteSpeedProbeConfig{
+		Name:            "scum_speedprobe",
+		URL:             "http://scum:8090/api/v1/speed/latest",
+		IntervalSeconds: 300,
+		TimeoutSeconds:  3,
+		Enabled:         true,
+	})
+
+	if len(storage.samples) != 0 {
+		t.Fatalf("samples = %+v, want loaded latest state to dedupe same run", storage.samples)
 	}
 }
 
@@ -305,4 +429,8 @@ func intValue(value *int) int {
 		return 0
 	}
 	return *value
+}
+
+func floatPtr(value float64) *float64 {
+	return &value
 }

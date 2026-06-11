@@ -52,9 +52,10 @@ type aiExportManifest struct {
 }
 
 type aiExportTargets struct {
-	Targets        []config.TargetConfig        `json:"targets"`
-	DownloadProbes []config.DownloadProbeConfig `json:"download_probes"`
-	StatusPages    []config.StatusPageConfig    `json:"status_pages"`
+	Targets           []config.TargetConfig           `json:"targets"`
+	DownloadProbes    []config.DownloadProbeConfig    `json:"download_probes"`
+	RemoteSpeedProbes []config.RemoteSpeedProbeConfig `json:"remote_speed_probes"`
+	StatusPages       []config.StatusPageConfig       `json:"status_pages"`
 }
 
 type aiExportThresholds struct {
@@ -72,6 +73,7 @@ type aiExportSummaryOverall struct {
 	NetworkWorstLevel        string `json:"network_worst_level"`
 	ServiceHealthWorstLevel  string `json:"service_health_worst_level"`
 	ProviderStatusWorstLevel string `json:"provider_status_worst_level"`
+	SpeedprobeWorstLevel     string `json:"speedprobe_worst_level"`
 }
 
 type aiExportSummaryCounts struct {
@@ -80,6 +82,7 @@ type aiExportSummaryCounts struct {
 	DNS        int `json:"dns"`
 	HTTP       int `json:"http"`
 	Download   int `json:"download"`
+	Speedprobe int `json:"speedprobe"`
 	StatusPage int `json:"status_page"`
 }
 
@@ -87,6 +90,7 @@ type aiExportSummaryIssues struct {
 	Network        int `json:"network"`
 	ServiceHealth  int `json:"service_health"`
 	ProviderStatus int `json:"provider_status"`
+	Speedprobe     int `json:"speedprobe"`
 }
 
 type aiExportAggregate struct {
@@ -104,6 +108,8 @@ type aiExportAggregate struct {
 	externalIssues     int
 	dnsIssues          int
 	serviceGroupFailed map[string]int
+	speedprobeIssues   int
+	speedprobeWorst    string
 }
 
 func (h *Handler) aiExport(w http.ResponseWriter, r *http.Request) {
@@ -257,9 +263,10 @@ func (h *Handler) buildAIExportZip(req aiExportRequest) (string, error) {
 			NetwatchVersion: h.version,
 		},
 		"targets.json": aiExportTargets{
-			Targets:        h.targets,
-			DownloadProbes: h.downloadProbes,
-			StatusPages:    h.statusPages,
+			Targets:           h.targets,
+			DownloadProbes:    h.downloadProbes,
+			RemoteSpeedProbes: h.remoteSpeedProbes,
+			StatusPages:       h.statusPages,
 		},
 		"thresholds.json": aiExportThresholds{
 			MonitoringThresholds: h.thresholds,
@@ -409,6 +416,7 @@ func newAIExportAggregate() *aiExportAggregate {
 		networkWorst:       "ok",
 		serviceWorst:       "ok",
 		providerWorst:      "ok",
+		speedprobeWorst:    "ok",
 		serviceGroupFailed: make(map[string]int),
 	}
 }
@@ -428,6 +436,9 @@ func (a *aiExportAggregate) add(sample model.Sample, thresholds config.Monitorin
 	case "http":
 		a.counts.HTTP++
 		a.addServiceSample(sample, thresholds)
+	case "speedprobe":
+		a.counts.Speedprobe++
+		a.addSpeedprobeSample(sample)
 	case "status_page":
 		a.counts.StatusPage++
 		a.addProviderSample(sample)
@@ -488,6 +499,20 @@ func (a *aiExportAggregate) addProviderSample(sample model.Sample) {
 	}
 }
 
+func (a *aiExportAggregate) addSpeedprobeSample(sample model.Sample) {
+	level := "ok"
+	if strings.EqualFold(sample.Status, "unknown") || sample.OK == nil {
+		level = "unknown"
+	} else if !*sample.OK || sample.Error != "" {
+		level = "warning"
+	}
+	if level == "ok" {
+		return
+	}
+	a.speedprobeIssues++
+	a.speedprobeWorst = worseAIExportLevel(a.speedprobeWorst, level)
+}
+
 func (a *aiExportAggregate) summary() aiExportSummary {
 	for _, failed := range a.serviceGroupFailed {
 		if failed > 1 {
@@ -499,12 +524,14 @@ func (a *aiExportAggregate) summary() aiExportSummary {
 			NetworkWorstLevel:        a.networkWorst,
 			ServiceHealthWorstLevel:  a.serviceWorst,
 			ProviderStatusWorstLevel: a.providerWorst,
+			SpeedprobeWorstLevel:     a.speedprobeWorst,
 		},
 		Counts: a.counts,
 		Issues: aiExportSummaryIssues{
 			Network:        a.networkIssues,
 			ServiceHealth:  a.serviceIssues,
 			ProviderStatus: a.providerIssues,
+			Speedprobe:     a.speedprobeIssues,
 		},
 		Highlights: a.highlights(),
 	}
@@ -532,6 +559,9 @@ func (a *aiExportAggregate) highlights() []string {
 	}
 	if a.providerIssues > 0 {
 		highlights = append(highlights, "Provider status page issues were observed separately from local network health.")
+	}
+	if a.counts.Speedprobe > 0 {
+		highlights = append(highlights, "Remote speedprobe throughput samples are included for WAN performance analysis.")
 	}
 	if len(highlights) == 0 {
 		highlights = append(highlights, "No issues were detected in the exported range.")
@@ -605,6 +635,7 @@ This archive contains observation data exported from netwatch for AI-assisted an
 - Core Network Status: Gateway / External / DNS / Download probes. This represents local network health.
 - Service Health: HTTP endpoint probes such as GitHub, ChatGPT, Docker, YouTube, and others. These are supplemental observations and may be affected by provider-side issues.
 - Provider Status: Official provider status pages such as GitHub Status, OpenAI Status, Cloudflare Status, and Laravel Cloud Status.
+- Speedprobe: Remote throughput measurements performed by netwatch-speedprobe on a stronger observer node such as scum.
 `, req.From.Format(time.RFC3339), req.To.Format(time.RFC3339), req.Timezone)
 }
 
@@ -624,7 +655,11 @@ func aiExportPrompt(req aiExportRequest) string {
 3. Gateway / External / DNS / Download の相関
 4. HTTP Service issue と Core Network issue の切り分け
 5. Provider Status issue との関係
-6. 改善候補
-7. 追加で監視した方がよい項目
+6. speedprobe の 1MB / 10MB / 100MB の実効速度の時間帯別比較
+7. Gateway / External / DNS の異常と throughput 低下の相関
+8. 夜間だけ throughput が低下しているか
+9. ISP変更前後の比較に使える指標
+10. 改善候補
+11. 追加で監視した方がよい項目
 `, req.From.Format(time.RFC3339), req.To.Format(time.RFC3339))
 }

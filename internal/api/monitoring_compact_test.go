@@ -264,7 +264,7 @@ func TestMonitoringCompactCriticalAndUnknownLabels(t *testing.T) {
 			Metric: "loss_percent",
 			Value:  6,
 		},
-	}, emptyCompactHistory(), time.Now(), config.DefaultMonitoringThresholds(), nil, nil)
+	}, emptyCompactHistory(), time.Now(), config.DefaultMonitoringThresholds(), nil, nil, nil)
 	if critical.Label != "CRIT" || critical.Title != "Critical network issue detected" || critical.IssueCount != 1 {
 		t.Fatalf("critical = %+v, want compact critical response", critical)
 	}
@@ -273,7 +273,7 @@ func TestMonitoringCompactCriticalAndUnknownLabels(t *testing.T) {
 		Source: "netwatch",
 		Level:  "unknown",
 		Alert:  true,
-	}, emptyCompactHistory(), time.Now(), config.DefaultMonitoringThresholds(), nil, nil)
+	}, emptyCompactHistory(), time.Now(), config.DefaultMonitoringThresholds(), nil, nil, nil)
 	if unknown.Label != "UNK" || unknown.PrimaryReason != nil || unknown.Message != "Netwatch cannot determine current network health." {
 		t.Fatalf("unknown = %+v, want compact unknown response", unknown)
 	}

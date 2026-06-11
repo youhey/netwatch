@@ -107,6 +107,19 @@
       }
     }
   ],
+  "remote_speed_probes": [
+    {
+      "name": "scum_speedprobe",
+      "label": "Scum Speedprobe",
+      "display_order": 30,
+      "url": "http://scum:8090/api/v1/speed/latest",
+      "capabilities_url": "http://scum:8090/api/v1/capabilities",
+      "health_url": "http://scum:8090/api/v1/health",
+      "interval_seconds": 300,
+      "timeout_seconds": 10,
+      "enabled": false
+    }
+  ],
   "status_pages": [
     {
       "name": "github_status",

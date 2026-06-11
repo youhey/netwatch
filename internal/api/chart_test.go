@@ -183,6 +183,29 @@ func TestAggregateDownloadFailureOnlyOmitsMbps(t *testing.T) {
 	}
 }
 
+func TestAggregateSpeedprobe(t *testing.T) {
+	base := time.Date(2026, 6, 6, 0, 0, 0, 0, time.UTC)
+	ok := true
+	failed := false
+	samples := []model.Sample{
+		{Timestamp: base, OK: &ok, Mbps: floatPtr(60)},
+		{Timestamp: base.Add(time.Minute), OK: &ok, Mbps: floatPtr(80)},
+		{Timestamp: base.Add(2 * time.Minute), OK: &failed, Error: "context deadline exceeded"},
+	}
+
+	points := aggregateSpeedprobe(samples, 5*time.Minute)
+	if len(points) != 1 {
+		t.Fatalf("len(points) = %d, want 1", len(points))
+	}
+	point := points[0]
+	if point.SampleCount != 3 || point.FailureCount != 1 || point.TimeoutCount != 1 {
+		t.Fatalf("point = %+v, want speedprobe counts", point)
+	}
+	if point.AvgMbps == nil || *point.AvgMbps != 70 || point.MinMbps == nil || *point.MinMbps != 60 || point.MaxMbps == nil || *point.MaxMbps != 80 {
+		t.Fatalf("point = %+v, want speedprobe Mbps aggregate", point)
+	}
+}
+
 func TestThinPoints(t *testing.T) {
 	points := make([]chartPoint, 20)
 	for i := range points {
