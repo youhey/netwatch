@@ -209,12 +209,15 @@ func TestMonitoringCompactMixedCoreAndHTTPUsesCoreReasons(t *testing.T) {
 	}
 }
 
-func TestMonitoringCompactWarningReason(t *testing.T) {
+func TestMonitoringCompactSeparatesDownloadThroughput(t *testing.T) {
 	state := collector.NewState()
 	ok := true
 	now := time.Now()
+	expectedBytes := int64(1048576)
+	downloadedBytes := int64(1048576)
 	state.Load([]model.Sample{
-		{Timestamp: now, Type: "download", Name: "r2_1mb", OK: &ok, Mbps: floatPtr(3.2)},
+		{Timestamp: now, Type: "ping", Name: "gateway", OK: &ok, LossPercent: floatPtr(0), RTTAvgMs: floatPtr(1)},
+		{Timestamp: now, Type: "download", Name: "r2_1mb", Label: "R2 1MB", OK: &ok, Mbps: floatPtr(3.2), DurationMs: floatPtr(2850), ExpectedBytes: &expectedBytes, DownloadedBytes: &downloadedBytes},
 	})
 	handler := New(state, "test").Routes()
 
@@ -226,14 +229,19 @@ func TestMonitoringCompactWarningReason(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("Unmarshal() error = %v", err)
 	}
-	if body.Level != "warning" || body.Label != "WARN" || !body.Alert || body.IssueCount != 1 {
-		t.Fatalf("body = %+v, want compact warning response", body)
+	if body.Level != "ok" || body.Label != "NET OK" || body.Alert || body.IssueCount != 0 || body.PrimaryReason != nil || len(body.Reasons) != 0 {
+		t.Fatalf("body = %+v, want download throughput excluded from core monitoring", body)
 	}
-	if body.PrimaryReason == nil || body.PrimaryReason.Code != "download_slow" || body.PrimaryReason.Target != "r2_1mb" || body.PrimaryReason.Metric != "mbps" || body.PrimaryReason.Value != 3.2 {
-		t.Fatalf("primary_reason = %+v, want minimal download_slow reason", body.PrimaryReason)
+	if body.ThroughputStatus.Level != "warning" || body.ThroughputStatus.Alert || body.ThroughputStatus.IssueCount != 1 || len(body.ThroughputStatus.Sources) != 1 {
+		t.Fatalf("throughput_status = %+v, want warning throughput status without alert", body.ThroughputStatus)
 	}
-	if body.Title != "Network degradation detected" || body.Message != "Download throughput is below the warning threshold on r2_1mb." {
-		t.Fatalf("body = %+v, want warning title/message", body)
+	source := body.ThroughputStatus.Sources[0]
+	if source.Name != "legacy_download" || source.Type != "download_probe" || source.Level != "warning" || len(source.Probes) != 1 {
+		t.Fatalf("source = %+v, want legacy download source", source)
+	}
+	probe := source.Probes[0]
+	if probe.Name != "r2_1mb" || probe.Level != "warning" || probe.Reason != "download_slow" || probe.Mbps == nil || *probe.Mbps != 3.2 || probe.DurationMs == nil || *probe.DurationMs != 2850 {
+		t.Fatalf("probe = %+v, want download throughput issue", probe)
 	}
 	if len(body.History.Points) != compactHistoryPoints {
 		t.Fatalf("len(history.points) = %d, want %d", len(body.History.Points), compactHistoryPoints)
@@ -246,7 +254,7 @@ func TestMonitoringCompactWarningReason(t *testing.T) {
 	if err := json.Unmarshal(statusRec.Body.Bytes(), &status); err != nil {
 		t.Fatalf("Unmarshal(status) error = %v", err)
 	}
-	if body.Level != status.Level || body.IssueCount != len(status.Reasons) {
+	if body.Level != status.Level || body.IssueCount != len(status.Reasons) || status.Level != "ok" {
 		t.Fatalf("compact = %+v status = %+v, want matching level and issue count", body, status)
 	}
 }

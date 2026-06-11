@@ -254,12 +254,14 @@ func (h *Handler) statusPagesLatest(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) summary(w http.ResponseWriter, r *http.Request) {
 	generatedAt := time.Now()
 	status := buildMonitoringStatus(h.applyDisplayMetadata(h.state.LatestAll()), h.thresholds, generatedAt)
+	throughput := throughputStatus(h.latestThroughputSamples(), h.thresholds)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"generated_at":    generatedAt,
-		"network_status":  monitoringSummary(status),
-		"service_health":  serviceHealthSummary(h.latestServices(), h.thresholds),
-		"speedprobe":      speedprobeSummary(h.latestSpeedprobes()),
-		"provider_status": providerStatusSummary(h.latestStatusPages()),
+		"generated_at":      generatedAt,
+		"network_status":    monitoringSummary(status),
+		"throughput_status": throughputStatusSummary(throughput),
+		"service_health":    serviceHealthSummary(h.latestServices(), h.thresholds),
+		"speedprobe":        speedprobeSummary(h.latestSpeedprobes()),
+		"provider_status":   providerStatusSummary(h.latestStatusPages()),
 	})
 }
 
@@ -443,7 +445,7 @@ func (h *Handler) monitoringCompact(w http.ResponseWriter, r *http.Request) {
 	start := end.Add(-duration)
 	status := buildMonitoringStatus(h.applyDisplayMetadata(h.state.LatestAll()), h.thresholds, generatedAt)
 	history := buildMonitoringStatusHistory(h.applyDisplayMetadata(h.state.SamplesSince(start)), h.thresholds, "2h", "5m", duration, bucket, start, end, generatedAt)
-	writeJSON(w, http.StatusOK, buildMonitoringCompact(status, history, generatedAt, h.thresholds, h.latestServices(), h.latestSpeedprobes(), h.latestStatusPages()))
+	writeJSON(w, http.StatusOK, buildMonitoringCompact(status, history, generatedAt, h.thresholds, h.latestServices(), h.latestThroughputSamples(), h.latestStatusPages()))
 }
 
 func (h *Handler) latestByType(sampleType string) []model.Sample {
@@ -464,6 +466,12 @@ func (h *Handler) latestStatusPages() []model.Sample {
 
 func (h *Handler) latestSpeedprobes() []model.Sample {
 	return h.applyDisplayMetadata(h.state.LatestByType("speedprobe"))
+}
+
+func (h *Handler) latestThroughputSamples() []model.Sample {
+	samples := h.latestByType("download")
+	samples = append(samples, h.latestSpeedprobes()...)
+	return samples
 }
 
 func (h *Handler) speedprobeSeriesSamples(source, name string, since time.Time) []model.Sample {

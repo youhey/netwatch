@@ -99,8 +99,6 @@ func collectMonitoringReasons(samples []model.Sample, thresholds config.Monitori
 			reasons = append(reasons, pingReasons(sample, thresholds.Ping)...)
 		case "dns":
 			reasons = append(reasons, dnsReasons(sample, thresholds.DNS)...)
-		case "download":
-			reasons = append(reasons, downloadReasons(sample, thresholds.Download)...)
 		}
 	}
 
@@ -112,7 +110,7 @@ func collectMonitoringReasons(samples []model.Sample, thresholds config.Monitori
 
 func isCoreMonitoringSample(sample model.Sample) bool {
 	switch sample.Type {
-	case "ping", "dns", "download":
+	case "ping", "dns":
 		return true
 	default:
 		return false
@@ -350,12 +348,10 @@ func reasonPriority(code string) int {
 	priorities := map[string]int{
 		"gateway_loss":      10,
 		"packet_loss":       20,
-		"download_slow":     30,
-		"download_failure":  40,
-		"dns_failure":       50,
-		"external_rtt_high": 60,
-		"gateway_rtt_high":  70,
-		"dns_slow":          80,
+		"dns_failure":       30,
+		"external_rtt_high": 40,
+		"gateway_rtt_high":  50,
+		"dns_slow":          60,
 	}
 	if priority, ok := priorities[code]; ok {
 		return priority

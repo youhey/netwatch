@@ -36,8 +36,6 @@ func TestCollectMonitoringReasonsCoversCodes(t *testing.T) {
 		"external_rtt_high",
 		"dns_failure",
 		"dns_slow",
-		"download_failure",
-		"download_slow",
 	} {
 		if !codes[code] {
 			t.Fatalf("reason codes = %+v, want %s", codes, code)
@@ -49,6 +47,8 @@ func TestCollectMonitoringReasonsCoversCodes(t *testing.T) {
 		"service_failure",
 		"service_group_degraded",
 		"provider_status",
+		"download_failure",
+		"download_slow",
 	} {
 		if codes[code] {
 			t.Fatalf("reason codes = %+v, want %s excluded from core monitoring", codes, code)
@@ -68,11 +68,19 @@ func TestBuildMonitoringStatusLevels(t *testing.T) {
 		t.Fatalf("healthy = %+v, want ok without reasons", healthy)
 	}
 
-	warning := buildMonitoringStatus([]model.Sample{
+	downloadSlow := buildMonitoringStatus([]model.Sample{
 		{Type: "download", Name: "r2_1mb", OK: &ok, Mbps: floatPtr(3.2)},
 	}, thresholds, now)
-	if !warning.Alert || warning.Level != "warning" || warning.PrimaryReason == nil || warning.PrimaryReason.Code != "download_slow" {
-		t.Fatalf("warning = %+v, want download warning", warning)
+	if downloadSlow.Alert || downloadSlow.Level != "ok" || downloadSlow.PrimaryReason != nil || len(downloadSlow.Reasons) != 0 {
+		t.Fatalf("downloadSlow = %+v, want download excluded from core monitoring", downloadSlow)
+	}
+
+	failed := false
+	downloadFailed := buildMonitoringStatus([]model.Sample{
+		{Type: "download", Name: "r2_1mb", OK: &failed, Error: "timeout"},
+	}, thresholds, now)
+	if downloadFailed.Alert || downloadFailed.Level != "ok" || downloadFailed.PrimaryReason != nil || len(downloadFailed.Reasons) != 0 {
+		t.Fatalf("downloadFailed = %+v, want download failure excluded from core monitoring", downloadFailed)
 	}
 
 	critical := buildMonitoringStatus([]model.Sample{
@@ -85,19 +93,20 @@ func TestBuildMonitoringStatusLevels(t *testing.T) {
 
 func TestSelectPrimaryReasonUsesSeverityPriorityAndBadness(t *testing.T) {
 	ok := true
+	failed := false
 	thresholds := config.DefaultMonitoringThresholds()
 
 	severity := buildMonitoringStatus([]model.Sample{
 		{Type: "ping", Name: "cloudflare_dns", OK: &ok, LossPercent: floatPtr(2)},
-		{Type: "download", Name: "r2_10mb", OK: &ok, Mbps: floatPtr(2)},
+		{Type: "dns", Name: "google_dns_lookup", OK: &ok, DurationMs: floatPtr(1200)},
 	}, thresholds, time.Now())
-	if severity.PrimaryReason == nil || severity.PrimaryReason.Code != "download_slow" {
-		t.Fatalf("primary = %+v, want critical download_slow before warning packet_loss", severity.PrimaryReason)
+	if severity.PrimaryReason == nil || severity.PrimaryReason.Code != "dns_slow" {
+		t.Fatalf("primary = %+v, want critical dns_slow before warning packet_loss", severity.PrimaryReason)
 	}
 
 	priority := buildMonitoringStatus([]model.Sample{
 		{Type: "ping", Name: "cloudflare_dns", OK: &ok, LossPercent: floatPtr(2)},
-		{Type: "download", Name: "r2_1mb", OK: &ok, Mbps: floatPtr(3.2)},
+		{Type: "dns", Name: "dns_down", OK: &failed},
 	}, thresholds, time.Now())
 	if priority.PrimaryReason == nil || priority.PrimaryReason.Code != "packet_loss" {
 		t.Fatalf("primary = %+v, want packet_loss by reason priority", priority.PrimaryReason)
@@ -116,7 +125,7 @@ func TestMonitoringStatusIDIsStableForSameReasons(t *testing.T) {
 	ok := true
 	thresholds := config.DefaultMonitoringThresholds()
 	samples := []model.Sample{
-		{Type: "download", Name: "r2_1mb", OK: &ok, Mbps: floatPtr(3.2)},
+		{Type: "ping", Name: "cloudflare_dns", OK: &ok, LossPercent: floatPtr(2)},
 	}
 
 	first := buildMonitoringStatus(samples, thresholds, time.Now())
@@ -129,18 +138,16 @@ func TestMonitoringStatusIDIsStableForSameReasons(t *testing.T) {
 func TestDownloadReasonIncludesRetryMetadata(t *testing.T) {
 	ok := true
 	nextCheckAt := time.Date(2026, 6, 7, 13, 30, 30, 0, time.UTC)
-	reasons := collectMonitoringReasons([]model.Sample{
-		{
-			Type:                 "download",
-			Name:                 "r2_1mb",
-			OK:                   &ok,
-			Mbps:                 floatPtr(3.2),
-			RetryState:           "degraded",
-			RetryAttempt:         intPtr(1),
-			RecoverySuccessCount: intPtr(0),
-			NextCheckAt:          &nextCheckAt,
-		},
-	}, config.DefaultMonitoringThresholds())
+	reasons := downloadReasons(model.Sample{
+		Type:                 "download",
+		Name:                 "r2_1mb",
+		OK:                   &ok,
+		Mbps:                 floatPtr(3.2),
+		RetryState:           "degraded",
+		RetryAttempt:         intPtr(1),
+		RecoverySuccessCount: intPtr(0),
+		NextCheckAt:          &nextCheckAt,
+	}, config.DefaultMonitoringThresholds().Download)
 
 	if len(reasons) != 1 {
 		t.Fatalf("len(reasons) = %d, want 1", len(reasons))

@@ -134,15 +134,19 @@ func TestSummaryIncludesProviderStatus(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	var body struct {
-		NetworkStatus  monitoringSummaryResponse     `json:"network_status"`
-		ServiceHealth  serviceHealthSummaryResponse  `json:"service_health"`
-		ProviderStatus providerStatusSummaryResponse `json:"provider_status"`
+		NetworkStatus    monitoringSummaryResponse       `json:"network_status"`
+		ThroughputStatus throughputStatusSummaryResponse `json:"throughput_status"`
+		ServiceHealth    serviceHealthSummaryResponse    `json:"service_health"`
+		ProviderStatus   providerStatusSummaryResponse   `json:"provider_status"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("Unmarshal() error = %v", err)
 	}
 	if body.NetworkStatus.Level != "ok" || body.NetworkStatus.Alert || body.NetworkStatus.IssueCount != 0 {
 		t.Fatalf("network_status = %+v, want ok network summary", body.NetworkStatus)
+	}
+	if body.ThroughputStatus.Level != "ok" || body.ThroughputStatus.Alert || body.ThroughputStatus.IssueCount != 0 || body.ThroughputStatus.Sources != 1 || body.ThroughputStatus.Probes != 1 {
+		t.Fatalf("throughput_status = %+v, want ok throughput summary", body.ThroughputStatus)
 	}
 	if body.ServiceHealth.Level != "warning" || body.ServiceHealth.Alert || body.ServiceHealth.IssueCount != 1 || body.ServiceHealth.Groups != 2 || body.ServiceHealth.Services != 2 {
 		t.Fatalf("service_health = %+v, want service summary", body.ServiceHealth)
@@ -161,11 +165,14 @@ func TestAIExportReturnsZip(t *testing.T) {
 	status := http.StatusServiceUnavailable
 	expectedBytes := int64(10485760)
 	downloadedBytes := int64(10485760)
+	downloadExpectedBytes := int64(1048576)
+	downloadedDownloadBytes := int64(1048576)
 	writeTestJSONL(t, dataDir, old, []model.Sample{
-		{Timestamp: old, Type: "download", Name: "r2_1mb", OK: &ok, Mbps: floatPtr(9)},
+		{Timestamp: old, Type: "download", Name: "old_download", OK: &ok, Mbps: floatPtr(9)},
 	})
 	writeTestJSONL(t, dataDir, now, []model.Sample{
 		{Timestamp: now.Add(-1 * time.Hour), Type: "ping", Name: "gateway", OK: &ok, LossPercent: floatPtr(0), RTTAvgMs: floatPtr(1)},
+		{Timestamp: now.Add(-45 * time.Minute), Type: "download", Name: "r2_1mb", Label: "R2 1MB", OK: &ok, ExpectedBytes: &downloadExpectedBytes, DownloadedBytes: &downloadedDownloadBytes, DurationMs: floatPtr(2850), Mbps: floatPtr(3.2)},
 		{Timestamp: now.Add(-30 * time.Minute), Type: "http", Group: "github", Category: "dev", Name: "github_home", OK: &failed, HTTPStatus: &status, TotalMs: floatPtr(1200)},
 		{Timestamp: now.Add(-15 * time.Minute), Type: "speedprobe", Source: "scum_speedprobe", Name: "r2_10mb", Label: "R2 10MB", OK: &ok, ExpectedBytes: &expectedBytes, DownloadedBytes: &downloadedBytes, DurationMs: floatPtr(1000), Mbps: floatPtr(80), Status: "ok", RunID: "run-1"},
 	})
@@ -202,7 +209,7 @@ func TestAIExportReturnsZip(t *testing.T) {
 	if err := json.Unmarshal(files["manifest.json"], &manifest); err != nil {
 		t.Fatalf("Unmarshal(manifest) error = %v", err)
 	}
-	if manifest.Format != aiExportFormat || manifest.SampleCount != 3 || manifest.NetwatchVersion != "test-version" {
+	if manifest.Format != aiExportFormat || manifest.SampleCount != 4 || manifest.NetwatchVersion != "test-version" {
 		t.Fatalf("manifest = %+v, want export metadata", manifest)
 	}
 	var exportTargets aiExportTargets
@@ -212,15 +219,18 @@ func TestAIExportReturnsZip(t *testing.T) {
 	if len(exportTargets.RemoteSpeedProbes) != 1 || exportTargets.RemoteSpeedProbes[0].Name != "scum_speedprobe" {
 		t.Fatalf("targets = %+v, want remote speedprobe target metadata", exportTargets)
 	}
-	if strings.Contains(string(files["samples.jsonl"]), "r2_1mb") || !strings.Contains(string(files["samples.jsonl"]), `"kind":"ping"`) || !strings.Contains(string(files["samples.jsonl"]), `"kind":"http"`) || !strings.Contains(string(files["samples.jsonl"]), `"kind":"speedprobe"`) {
-		t.Fatalf("samples.jsonl = %s, want only in-range ping/http/speedprobe samples with kind", string(files["samples.jsonl"]))
+	if strings.Contains(string(files["samples.jsonl"]), "old_download") || !strings.Contains(string(files["samples.jsonl"]), `"kind":"ping"`) || !strings.Contains(string(files["samples.jsonl"]), `"kind":"download"`) || !strings.Contains(string(files["samples.jsonl"]), `"kind":"http"`) || !strings.Contains(string(files["samples.jsonl"]), `"kind":"speedprobe"`) {
+		t.Fatalf("samples.jsonl = %s, want only in-range ping/download/http/speedprobe samples with kind", string(files["samples.jsonl"]))
 	}
 	var summary aiExportSummary
 	if err := json.Unmarshal(files["summary.json"], &summary); err != nil {
 		t.Fatalf("Unmarshal(summary) error = %v", err)
 	}
-	if summary.Counts.Samples != 3 || summary.Counts.Ping != 1 || summary.Counts.HTTP != 1 || summary.Counts.Speedprobe != 1 || summary.Issues.ServiceHealth != 1 || summary.Overall.SpeedprobeWorstLevel != "ok" {
+	if summary.Counts.Samples != 4 || summary.Counts.Ping != 1 || summary.Counts.Download != 1 || summary.Counts.HTTP != 1 || summary.Counts.Speedprobe != 1 || summary.Issues.Network != 0 || summary.Issues.ServiceHealth != 1 || summary.Overall.SpeedprobeWorstLevel != "ok" || summary.ThroughputStatus.WorstLevel != "warning" || summary.ThroughputStatus.IssueCount != 1 || !containsString(summary.ThroughputStatus.Sources, "legacy_download") || !containsString(summary.ThroughputStatus.Sources, "scum_speedprobe") {
 		t.Fatalf("summary = %+v, want filtered sample counts and service issue", summary)
+	}
+	if !strings.Contains(string(files["README.md"]), "Throughput Status") || !strings.Contains(string(files["analysis-prompt.md"]), "Throughput Status") {
+		t.Fatalf("export docs missing throughput status description")
 	}
 }
 
@@ -701,14 +711,18 @@ func TestSummaryAndCompactIncludeSpeedprobeWithoutAffectingNetworkStatus(t *test
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	var summary struct {
-		NetworkStatus monitoringSummaryResponse `json:"network_status"`
-		Speedprobe    speedprobeSummaryResponse `json:"speedprobe"`
+		NetworkStatus    monitoringSummaryResponse       `json:"network_status"`
+		ThroughputStatus throughputStatusSummaryResponse `json:"throughput_status"`
+		Speedprobe       speedprobeSummaryResponse       `json:"speedprobe"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &summary); err != nil {
 		t.Fatalf("Unmarshal() error = %v", err)
 	}
 	if summary.NetworkStatus.Level != "ok" || summary.NetworkStatus.Alert || summary.Speedprobe.Sources != 1 || summary.Speedprobe.Probes != 2 {
 		t.Fatalf("summary = %+v, want speedprobe summary and ok network", summary)
+	}
+	if summary.ThroughputStatus.Level != "warning" || summary.ThroughputStatus.Alert || summary.ThroughputStatus.IssueCount != 2 || summary.ThroughputStatus.Sources != 2 || summary.ThroughputStatus.Probes != 3 {
+		t.Fatalf("throughput_status = %+v, want download and speedprobe summary", summary.ThroughputStatus)
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/api/monitoring/compact", nil)
@@ -725,8 +739,11 @@ func TestSummaryAndCompactIncludeSpeedprobeWithoutAffectingNetworkStatus(t *test
 	if err := json.Unmarshal(rec.Body.Bytes(), &compact); err != nil {
 		t.Fatalf("Unmarshal() error = %v", err)
 	}
-	if compact.NetworkStatus.Level != "ok" || compact.NetworkStatus.Alert || compact.ThroughputStatus.Level != "warning" || compact.ThroughputStatus.IssueCount != 1 || len(compact.ThroughputStatus.Sources) != 1 {
+	if compact.NetworkStatus.Level != "ok" || compact.NetworkStatus.Alert || compact.ThroughputStatus.Level != "warning" || compact.ThroughputStatus.IssueCount != 2 || len(compact.ThroughputStatus.Sources) != 2 {
 		t.Fatalf("compact = %+v, want throughput warning isolated from network status", compact)
+	}
+	if compact.ThroughputStatus.Sources[0].Name != "legacy_download" || compact.ThroughputStatus.Sources[0].Type != "download_probe" || compact.ThroughputStatus.Sources[1].Name != "scum_speedprobe" || compact.ThroughputStatus.Sources[1].Type != "speedprobe" {
+		t.Fatalf("throughput sources = %+v, want legacy download and speedprobe", compact.ThroughputStatus.Sources)
 	}
 }
 
@@ -855,7 +872,7 @@ func TestMonitoringStatusIgnoresHTTPFailure(t *testing.T) {
 	}
 }
 
-func TestMonitoringStatusWarnsOnDownloadSlow(t *testing.T) {
+func TestMonitoringStatusIgnoresDownloadSlow(t *testing.T) {
 	state := collector.NewState()
 	ok := true
 	state.Load([]model.Sample{
@@ -872,8 +889,8 @@ func TestMonitoringStatusWarnsOnDownloadSlow(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("Unmarshal() error = %v", err)
 	}
-	if !body.Alert || body.Level != "warning" || body.Message != "download r2_1mb 3.2Mbps" || body.PrimaryReason == nil || body.PrimaryReason.Code != "download_slow" {
-		t.Fatalf("body = %+v, want download warning", body)
+	if body.Alert || body.Level != "ok" || body.PrimaryReason != nil || len(body.Reasons) != 0 {
+		t.Fatalf("body = %+v, want download slow excluded from core monitoring", body)
 	}
 }
 
@@ -1010,8 +1027,11 @@ func newSpeedprobeTestHandler() http.Handler {
 	now := time.Now().Add(-time.Hour).Truncate(time.Hour).Add(32 * time.Minute)
 	expectedBytes := int64(10485760)
 	downloadedBytes := int64(10485760)
+	downloadExpectedBytes := int64(1048576)
+	downloadedDownloadBytes := int64(1048576)
 	state.Load([]model.Sample{
 		{Timestamp: now, Type: "ping", Name: "cloudflare_dns", OK: &ok, LossPercent: floatPtr(0), RTTAvgMs: floatPtr(10)},
+		{Timestamp: now, Type: "download", Name: "r2_1mb", Label: "R2 1MB", URL: "https://example.com/1mb.bin", OK: &ok, ExpectedBytes: &downloadExpectedBytes, DownloadedBytes: &downloadedDownloadBytes, DurationMs: floatPtr(2850), Mbps: floatPtr(2.8)},
 		{Timestamp: now.Add(-time.Minute), Type: "speedprobe", Kind: "speedprobe", Source: "scum_speedprobe", SourceLabel: "Scum Speedprobe", Name: "r2_10mb", Label: "R2 10MB", URL: "https://example.com/10mb.bin", OK: &ok, ExpectedBytes: &expectedBytes, DownloadedBytes: &downloadedBytes, DurationMs: floatPtr(1200), Mbps: floatPtr(60), Status: "ok", RunID: "run-1"},
 		{Timestamp: now, Type: "speedprobe", Kind: "speedprobe", Source: "scum_speedprobe", SourceLabel: "Scum Speedprobe", Name: "r2_10mb", Label: "R2 10MB", URL: "https://example.com/10mb.bin", OK: &ok, ExpectedBytes: &expectedBytes, DownloadedBytes: &downloadedBytes, DurationMs: floatPtr(1000), Mbps: floatPtr(80), Status: "ok", RunID: "run-2"},
 		{Timestamp: now, Type: "speedprobe", Kind: "speedprobe", Source: "scum_speedprobe", SourceLabel: "Scum Speedprobe", Name: "r2_100mb", Label: "R2 100MB", URL: "https://example.com/100mb.bin", OK: &failed, Error: "timeout", Status: "error", RunID: "run-3"},
@@ -1022,7 +1042,10 @@ func newSpeedprobeTestHandler() http.Handler {
 	remoteSpeedProbes := []config.RemoteSpeedProbeConfig{
 		{Name: "scum_speedprobe", Label: "Scum Speedprobe", DisplayOrder: 30, URL: "http://scum:8090/api/v1/speed/latest", IntervalSeconds: 300, TimeoutSeconds: 10, Enabled: true},
 	}
-	return New(state, "test", targets).WithRemoteSpeedProbes(remoteSpeedProbes).Routes()
+	downloadProbes := []config.DownloadProbeConfig{
+		{Name: "r2_1mb", Label: "R2 1MB", DisplayOrder: 10, URL: "https://example.com/1mb.bin", ExpectedBytes: 1048576, IntervalSeconds: 600, TimeoutSeconds: 20, Enabled: true},
+	}
+	return New(state, "test", targets).WithDownloadProbes(downloadProbes).WithRemoteSpeedProbes(remoteSpeedProbes).Routes()
 }
 
 func assertSampleCount(t *testing.T, rec *httptest.ResponseRecorder, want int) {

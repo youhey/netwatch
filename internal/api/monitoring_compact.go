@@ -76,7 +76,7 @@ func monitoringCompactSupport() monitoringCompactSupportResponse {
 	}
 }
 
-func buildMonitoringCompact(status monitoringStatusResponse, history monitoringStatusHistoryResponse, generatedAt time.Time, thresholds config.MonitoringThresholds, serviceSamples, speedprobeSamples, statusPageSamples []model.Sample) monitoringCompactResponse {
+func buildMonitoringCompact(status monitoringStatusResponse, history monitoringStatusHistoryResponse, generatedAt time.Time, thresholds config.MonitoringThresholds, serviceSamples, throughputSamples, statusPageSamples []model.Sample) monitoringCompactResponse {
 	networkStatus := compactNetworkStatus(status)
 	return monitoringCompactResponse{
 		Source:           "netwatch",
@@ -92,7 +92,7 @@ func buildMonitoringCompact(status monitoringStatusResponse, history monitoringS
 		History:          compactHistory(history),
 		NetworkStatus:    networkStatus,
 		ServiceHealth:    compactServiceHealth(serviceSamples, thresholds),
-		ThroughputStatus: throughputStatus(speedprobeSamples),
+		ThroughputStatus: throughputStatus(throughputSamples, thresholds),
 		ProviderStatus:   compactProviderStatus(statusPageSamples),
 	}
 }

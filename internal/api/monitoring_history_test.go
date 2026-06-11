@@ -111,18 +111,18 @@ func TestBuildMonitoringStatusHistoryBucketsAndSummary(t *testing.T) {
 	if body.Points[1].Level != "ok" || body.Points[1].OKCount != 1 {
 		t.Fatalf("points[1] = %+v, want ok bucket", body.Points[1])
 	}
-	if body.Points[2].Level != "warning" || !body.Points[2].Alert || body.Points[2].WarningCount != 1 {
-		t.Fatalf("points[2] = %+v, want warning bucket", body.Points[2])
+	if body.Points[2].Level != "unknown" || body.Points[2].Alert || body.Points[2].SampleCount != 0 {
+		t.Fatalf("points[2] = %+v, want download-only bucket ignored", body.Points[2])
 	}
-	if body.Points[3].Level != "critical" || !body.Points[3].Alert || body.Points[3].CriticalCount != 1 || body.Points[3].WarningCount != 1 {
-		t.Fatalf("points[3] = %+v, want critical priority bucket", body.Points[3])
+	if body.Points[3].Level != "critical" || !body.Points[3].Alert || body.Points[3].CriticalCount != 1 || body.Points[3].WarningCount != 0 {
+		t.Fatalf("points[3] = %+v, want critical core bucket without download warning", body.Points[3])
 	}
 	for i := 1; i < len(body.Points); i++ {
 		if !body.Points[i-1].BucketStart.Before(body.Points[i].BucketStart) {
 			t.Fatalf("points are not chronological at %d: %+v then %+v", i, body.Points[i-1], body.Points[i])
 		}
 	}
-	if body.Summary.OKCount != 1 || body.Summary.WarningCount != 1 || body.Summary.CriticalCount != 1 || body.Summary.UnknownCount != 21 {
+	if body.Summary.OKCount != 1 || body.Summary.WarningCount != 0 || body.Summary.CriticalCount != 1 || body.Summary.UnknownCount != 22 {
 		t.Fatalf("summary = %+v, want point-level summary", body.Summary)
 	}
 }

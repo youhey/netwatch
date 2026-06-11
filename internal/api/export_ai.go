@@ -63,10 +63,11 @@ type aiExportThresholds struct {
 }
 
 type aiExportSummary struct {
-	Overall    aiExportSummaryOverall `json:"overall"`
-	Counts     aiExportSummaryCounts  `json:"counts"`
-	Issues     aiExportSummaryIssues  `json:"issues"`
-	Highlights []string               `json:"highlights"`
+	Overall          aiExportSummaryOverall   `json:"overall"`
+	Counts           aiExportSummaryCounts    `json:"counts"`
+	Issues           aiExportSummaryIssues    `json:"issues"`
+	ThroughputStatus aiExportThroughputStatus `json:"throughput_status"`
+	Highlights       []string                 `json:"highlights"`
 }
 
 type aiExportSummaryOverall struct {
@@ -93,6 +94,12 @@ type aiExportSummaryIssues struct {
 	Speedprobe     int `json:"speedprobe"`
 }
 
+type aiExportThroughputStatus struct {
+	WorstLevel string   `json:"worst_level"`
+	IssueCount int      `json:"issue_count"`
+	Sources    []string `json:"sources"`
+}
+
 type aiExportAggregate struct {
 	counts             aiExportSummaryCounts
 	networkWorst       string
@@ -110,6 +117,9 @@ type aiExportAggregate struct {
 	serviceGroupFailed map[string]int
 	speedprobeIssues   int
 	speedprobeWorst    string
+	throughputIssues   int
+	throughputWorst    string
+	throughputSources  map[string]struct{}
 }
 
 func (h *Handler) aiExport(w http.ResponseWriter, r *http.Request) {
@@ -417,7 +427,9 @@ func newAIExportAggregate() *aiExportAggregate {
 		serviceWorst:       "ok",
 		providerWorst:      "ok",
 		speedprobeWorst:    "ok",
+		throughputWorst:    "ok",
 		serviceGroupFailed: make(map[string]int),
+		throughputSources:  make(map[string]struct{}),
 	}
 }
 
@@ -432,12 +444,13 @@ func (a *aiExportAggregate) add(sample model.Sample, thresholds config.Monitorin
 		a.addNetworkReasons(dnsReasons(sample, thresholds.DNS))
 	case "download":
 		a.counts.Download++
-		a.addNetworkReasons(downloadReasons(sample, thresholds.Download))
+		a.addThroughputSample(sample, thresholds)
 	case "http":
 		a.counts.HTTP++
 		a.addServiceSample(sample, thresholds)
 	case "speedprobe":
 		a.counts.Speedprobe++
+		a.addThroughputSample(sample, thresholds)
 		a.addSpeedprobeSample(sample)
 	case "status_page":
 		a.counts.StatusPage++
@@ -450,10 +463,6 @@ func (a *aiExportAggregate) addNetworkReasons(reasons []monitoringReason) {
 		a.networkIssues++
 		a.networkWorst = worseAIExportLevel(a.networkWorst, reason.Level)
 		switch reason.Code {
-		case "download_slow":
-			a.downloadSlow++
-		case "download_failure":
-			a.downloadFailure++
 		case "gateway_loss":
 			a.gatewayLoss++
 		case "gateway_rtt_high":
@@ -463,6 +472,26 @@ func (a *aiExportAggregate) addNetworkReasons(reasons []monitoringReason) {
 		case "dns_failure", "dns_slow":
 			a.dnsIssues++
 		}
+	}
+}
+
+func (a *aiExportAggregate) addThroughputSample(sample model.Sample, thresholds config.MonitoringThresholds) {
+	sourceName, _, _ := throughputSourceMetadata(sample)
+	if sourceName == "" {
+		return
+	}
+	a.throughputSources[sourceName] = struct{}{}
+	level, reason := throughputProbeLevel(sample, thresholds)
+	if level == "ok" {
+		return
+	}
+	a.throughputIssues++
+	a.throughputWorst = worseAIExportLevel(a.throughputWorst, level)
+	switch reason {
+	case "download_slow":
+		a.downloadSlow++
+	case "download_failure":
+		a.downloadFailure++
 	}
 }
 
@@ -533,6 +562,11 @@ func (a *aiExportAggregate) summary() aiExportSummary {
 			ProviderStatus: a.providerIssues,
 			Speedprobe:     a.speedprobeIssues,
 		},
+		ThroughputStatus: aiExportThroughputStatus{
+			WorstLevel: a.throughputWorst,
+			IssueCount: a.throughputIssues,
+			Sources:    sortedStringSet(a.throughputSources),
+		},
 		Highlights: a.highlights(),
 	}
 }
@@ -540,10 +574,10 @@ func (a *aiExportAggregate) summary() aiExportSummary {
 func (a *aiExportAggregate) highlights() []string {
 	highlights := make([]string, 0, 6)
 	if a.downloadSlow > 0 {
-		highlights = append(highlights, fmt.Sprintf("Download throughput dropped below threshold %d times.", a.downloadSlow))
+		highlights = append(highlights, fmt.Sprintf("Download throughput dropped below throughput threshold %d times.", a.downloadSlow))
 	}
 	if a.downloadFailure > 0 {
-		highlights = append(highlights, fmt.Sprintf("Download probe failed %d times.", a.downloadFailure))
+		highlights = append(highlights, fmt.Sprintf("Download probe failed %d times in Throughput Status.", a.downloadFailure))
 	}
 	if a.gatewayLoss == 0 && a.gatewayRTTHigh == 0 {
 		highlights = append(highlights, "Gateway latency and packet loss were stable throughout the range.")
@@ -567,6 +601,15 @@ func (a *aiExportAggregate) highlights() []string {
 		highlights = append(highlights, "No issues were detected in the exported range.")
 	}
 	return highlights
+}
+
+func sortedStringSet(values map[string]struct{}) []string {
+	result := make([]string, 0, len(values))
+	for value := range values {
+		result = append(result, value)
+	}
+	sort.Strings(result)
+	return result
 }
 
 func worseAIExportLevel(left, right string) string {
@@ -632,10 +675,11 @@ This archive contains observation data exported from netwatch for AI-assisted an
 
 ## Status scopes
 
-- Core Network Status: Gateway / External / DNS / Download probes. This represents local network health.
+- Core Network Status: Gateway / External / DNS probes. This represents baseline local network health.
+- Throughput Status: Download throughput observations from legacy download_probes and netwatch-speedprobe. These are used for ISP comparison, time-of-day congestion analysis, and WAN throughput diagnostics. They do not affect Core Network Status.
 - Service Health: HTTP endpoint probes such as GitHub, ChatGPT, Docker, YouTube, and others. These are supplemental observations and may be affected by provider-side issues.
 - Provider Status: Official provider status pages such as GitHub Status, OpenAI Status, Cloudflare Status, and Laravel Cloud Status.
-- Speedprobe: Remote throughput measurements performed by netwatch-speedprobe on a stronger observer node such as scum.
+- Speedprobe: Remote throughput measurements performed by netwatch-speedprobe on a stronger observer node such as scum. These are part of Throughput Status.
 `, req.From.Format(time.RFC3339), req.To.Format(time.RFC3339), req.Timezone)
 }
 
@@ -652,13 +696,13 @@ func aiExportPrompt(req aiExportRequest) string {
 
 1. 自宅ネットワーク品質の傾向
 2. 異常が発生した時間帯
-3. Gateway / External / DNS / Download の相関
+3. Gateway / External / DNS と Throughput Status の相関
 4. HTTP Service issue と Core Network issue の切り分け
 5. Provider Status issue との関係
-6. speedprobe の 1MB / 10MB / 100MB の実効速度の時間帯別比較
-7. Gateway / External / DNS の異常と throughput 低下の相関
-8. 夜間だけ throughput が低下しているか
-9. ISP変更前後の比較に使える指標
+6. Throughput Status の 1MB / 10MB / 100MB の速度推移を時間帯別に分析
+7. Core Network Status が正常な時間帯で Throughput だけ低下しているケース
+8. ISP / PPPoE / マンション共有回線の混雑が疑われる時間帯
+9. speedprobe と legacy download_probes の差
 10. 改善候補
 11. 追加で監視した方がよい項目
 `, req.From.Format(time.RFC3339), req.To.Format(time.RFC3339))

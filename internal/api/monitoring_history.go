@@ -147,8 +147,6 @@ func sampleMonitoringHistoryLevel(sample model.Sample, thresholds config.Monitor
 		reasons = pingReasons(sample, thresholds.Ping)
 	case "dns":
 		reasons = dnsReasons(sample, thresholds.DNS)
-	case "download":
-		reasons = downloadReasons(sample, thresholds.Download)
 	default:
 		return "ok"
 	}
